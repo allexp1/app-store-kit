@@ -371,3 +371,8 @@ Other Apple pages:
   `betabuildlocalization/attributes-data.dictionary`.
 
 - **First in-app purchase (live 2026-10-14):** with the agreements Active, the version page still shows no In-App Purchases section. The route is the purchase page's **Add for Review** (banner: "Your first non-consumable in-app purchase must be submitted with a new app version"), then the version's Add for Review; both go into one draft submission. The API reports the purchase `READY_TO_SUBMIT` while the page shows "Prepare for Submission". An unversioned purchase has no `inAppPurchaseVersions` relationship (404); its review screenshot is `GET /v2/inAppPurchases/{id}/appStoreReviewScreenshot`.
+- **App-level DSA trader status (live 2026-10-14):** App Information › App Store Regulations & Permits › Digital Services Act
+  reads "This developer has identified itself as a non-trader for this app" with **Get Started** until the account's
+  trader contact details are verified (the link goes to `/business?collectContactInfo=true`). After that the link is
+  **Edit**, which opens "Digital Services Act Compliance" with two radios, "This is a trader app" / "This is a
+  non-trader app", and Save. Owner only. Once a trader, an **Add Labels and Markings** link appears in the same block.
