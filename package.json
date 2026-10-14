@@ -18,7 +18,9 @@
     ".living/",
     "requirements.txt",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!**/__pycache__/**",
+    "!**/*.pyc"
   ],
   "keywords": [
     "claude",
