@@ -168,20 +168,60 @@ def images_in(d):
                   if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".heic", ".webp", ".gif", ".tif", ".tiff"))
 
 
+def build_sdk(facts):
+    """The release build SDK, not deployment target or installed Xcode."""
+    build = facts.get("build") or {}
+    app = facts.get("app") or {}
+    value = facts.get("sdk") or facts.get("build_sdk")
+    if not value and isinstance(build, dict):
+        value = build.get("sdk") or build.get("SDK")
+    if not value and isinstance(app, dict):
+        value = app.get("sdk") or app.get("build_sdk")
+    if isinstance(value, dict):
+        value = f"{value.get('name', 'iOS')} {value.get('version', '')}"
+    match = re.fullmatch(r"(?:iOS\s*|iphoneos\s*)?(\d+)(?:\.(\d+))?(?:\.\d+)?(?:\s*SDK)?", str(value), re.I)
+    return (int(match[1]), int(match[2] or 0)) if match else None
+
+
+def slot_requirement(slot, today, facts, present):
+    """required, recommended, future, unknown, or optional; unknown SDKs never become errors."""
+    unless = slot.get("required_unless")
+    if not unless:
+        match = re.search(r"Required only if ([\w-]+) is not provided", slot.get("required_note", ""))
+        unless = match[1] if match else None
+    if unless:
+        # Apple bolds only the medium Dynamic Island set as Required; this row's note conflicts with that, so a
+        # missing large set is a warning, not an error (references/apple-specs.md, scaling chain).
+        return "optional" if unless in present else "recommended"
+    if slot.get("required"):
+        return "required"
+    date = slot.get("required_from")
+    if not date:
+        return "optional"
+    sdk = slot.get("required_sdk")
+    if not sdk:
+        match = re.search(r"iOS ([\d.]+) SDK", slot.get("required_note", ""))
+        sdk = "iOS " + match[1] if match else None
+    if sdk:
+        actual, minimum = build_sdk(facts), build_sdk({"sdk": sdk})
+        if actual is None or minimum is None:
+            return "unknown"
+        if actual < minimum:
+            return "optional"
+    due = dt.date.fromisoformat(date + "-01" if len(date) == 7 else date)
+    return "required" if today >= due else "future"
+
+
 def required_slots(rules, families, today):
-    out = []
-    for sid, s in rules["screenshots"]["slots"].items():
-        if s["family"] not in families:
-            continue
-        if s.get("required"):
-            out.append((sid, None))
-        elif s.get("required_from"):
-            due = dt.date.fromisoformat(s["required_from"] + "-01") if len(s["required_from"]) == 7 else dt.date.fromisoformat(s["required_from"])
-            out.append((sid, due))
-    return out
+    return [(sid, s.get("required_from")) for sid, s in rules["screenshots"]["slots"].items()
+            if s["family"] in families and (s.get("required") or s.get("required_from")
+                                            or s.get("required_unless") or s.get("required_note"))]
 
 
 def check_screenshots(kit, rules, rep, families, fix, today, missing):
+    import yaml
+    facts_path = kit / "facts.yaml"
+    facts = yaml.safe_load(facts_path.read_text()) or {} if facts_path.exists() else {}
     root = kit / "screenshots"
     sr = rules["screenshots"]
     slots = sr["slots"]
@@ -208,14 +248,19 @@ def check_screenshots(kit, rules, rep, families, fix, today, missing):
         for sid, due in required_slots(rules, families, today):
             if sid in present:
                 continue
-            if due is None:
-                rep.err(loc, f"required set missing: {sid} ({slots[sid]['label']})")
+            state = slot_requirement(slots[sid], today, facts, present)
+            note = slots[sid].get("required_note", "")
+            if state == "required":
+                rep.err(loc, f"required set missing: {sid} ({slots[sid]['label']}). {note}")
                 missing.setdefault(loc, []).append(sid)
-            elif today >= due:
-                rep.err(loc, f"set missing: {sid}. {slots[sid].get('required_note', '')}")
-                missing.setdefault(loc, []).append(sid)
-            else:
-                rep.note(loc, f"{sid} not present; {slots[sid].get('required_note', 'required later')} (due {due})")
+            elif state == "recommended":
+                rep.warn(loc, f"{sid} not present ({slots[sid]['label']}). {note}; Apple's page marks only "
+                              f"iphone-di-medium as Required, so add one of the large sets to be safe.")
+            elif state == "unknown":
+                rep.warn(loc, f"{sid} not present; build SDK is unknown in facts.yaml, so the SDK condition "
+                              f"cannot be checked. {note}")
+            elif state == "future":
+                rep.note(loc, f"{sid} not present; {note} (due {due})")
     return locales
 
 
@@ -226,8 +271,8 @@ def preview_family(slot_id, resolutions):
     return fam if fam in resolutions else None
 
 
-def check_previews(kit, rules, rep):
-    root = kit / "previews"
+def check_previews(kit, rules, rep, root=None, prefix=""):
+    root = root or kit / "previews"
     if not root.exists():
         rep.note("previews", "no previews (optional; extras are off the critical path)")
         return
@@ -238,7 +283,7 @@ def check_previews(kit, rules, rep):
     pr = rules["previews"]
     for loc in sorted(p for p in root.iterdir() if p.is_dir()):
         for sd in sorted(p for p in loc.iterdir() if p.is_dir()):
-            scope = f"{loc.name}/{sd.name} preview"
+            scope = f"{prefix}{loc.name}/{sd.name} preview"
             files = sorted(p for p in sd.iterdir() if p.suffix.lower() in (".mov", ".mp4", ".m4v"))
             if len(files) > pr["max_per_set"]:
                 rep.err(scope, f"{len(files)} previews; max {pr['max_per_set']} per size and language")
@@ -315,7 +360,7 @@ def check_creative(kit, rules, rep, fix, root=None, prefix=""):
 # .mov/.m4v/.mp4 at 30 or 60 fps, 15 to 30 s (creative-assets specifications), 500 MB at most.
 EVENT_MEDIA = {"card": {"ratio": (16, 9), "min": (1920, 1080), "max": (3840, 2160)},
                "details": {"ratio": (9, 16), "min": (1080, 1920), "max": (2160, 3840)}}
-EVENT_VIDEO = {"fps": [30, 60], "seconds": [15, 30]}
+EVENT_VIDEO = {"fps": [30, 60], "seconds": [15, 30], "max_bytes": 500_000_000}
 
 
 def check_growth(kit, rules, rep, fix):
@@ -337,6 +382,9 @@ def check_growth(kit, rules, rep, fix):
                     rep.err(scope, f"{len(files)} screenshot(s); Apple allows {sr['min_per_set']}-{sr['max_per_set']}")
                 for f in files:
                     check_image(f, accepted_sizes(slots[sd.name]), sr, rep, scope, fix, slots[sd.name]["label"])
+    for previews in sorted(root.rglob("previews")):
+        if previews.is_dir():
+            check_previews(kit, rules, rep, previews, previews.relative_to(kit).as_posix() + "/")
     for creative in sorted(root.rglob("creative")):
         check_creative(kit, rules, rep, fix, creative, creative.parent.relative_to(kit).as_posix() + "/")
     for media in sorted(root.glob("*/media")):
@@ -385,6 +433,9 @@ def check_event_video(f, spec, rep, scope):
     dur = float(probe.get("format", {}).get("duration") or 0)
     fps = preview_check._rate(v.get("avg_frame_rate")) or 0
     bad = []
+    size = max(f.stat().st_size, int(probe.get("format", {}).get("size") or 0))
+    if size > EVENT_VIDEO["max_bytes"]:
+        bad.append(f"{size} bytes, maximum 500 MB")
     if not _fits(w, h, spec):
         bad.append(f"{w}x{h}, need {spec['ratio'][0]}:{spec['ratio'][1]} from {spec['min'][0]}x{spec['min'][1]} to "
                    f"{spec['max'][0]}x{spec['max'][1]}")

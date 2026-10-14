@@ -122,8 +122,11 @@ class Field:
         if self.private_key and not (private or {}).get(self.private_key):
             return None
         want, got = norm(self.text(private)), norm(live)
-        if self.private_key and len(re.sub(r"\D", "", want)) >= 6:  # phone: separators don't matter
+        # Only a phone number compares by its digits (Apple reformats it); a password "123-456" isn't "123456".
+        if self.private_key and "phone" in self.private_key and phone_like(want) and phone_like(got):
             return re.sub(r"\D", "", want) == re.sub(r"\D", "", got)
+        if self.private_key:
+            return self.text(private) == str(live)
         if self.kind == "copy":
             return want == got
         if got in self.live_ok:
@@ -214,6 +217,8 @@ def _cell(s):
 def privacy_rows(kit):
     """Rows from privacy.yaml (preferred) or the 'Data types' table in privacy-labels.md."""
     py = load_yaml(kit / "privacy.yaml")
+    if py.get("collects") is False:
+        return False, []
     if py.get("data_types") or py.get("rows"):
         out = []
         for r in py.get("data_types") or py.get("rows"):
@@ -476,7 +481,7 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
                       "choose", note="Choose File; it can be replaced but not removed."),
                 Field("Review Information › Review Notes (Optional)", c.get("review_notes", ""), limit=lim["iap_review_notes"])
                 if c.get("review_notes") else Field("Review Information › Review Notes (Optional)", "leave empty; the app's review notes cover it", "choose"),
-            ], note="Press Save at the top. Don't press Add for Review: the first purchase is added on the app's version page and goes to Apple with the app."),
+            ], note="Press Save at the top. When ready to submit, use In-App Purchases › the purchase › Add for Review, together with the first app version."),
         ]
     if iap_steps:
         sections.append(Section("In-App Purchases", f"Apps › {app_name} › Monetization › In-App Purchases › +",
@@ -486,6 +491,8 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
     # 5. App Privacy --------------------------------------------------------------------------------------
     collects, rows = privacy_rows(kit)
     pv = conn.get("privacy", {})
+    if collects is None and pv.get("collects") is False:
+        collects, rows = False, []
     p_steps = [Step("Privacy Policy › Edit", [
         Field("Privacy Policy URL", meta.get("privacy_policy_url") or facts.get("urls", {}).get("privacy_policy")),
         Field("User Privacy Choices URL", pv.get("user_choices_url"), "copy") if pv.get("user_choices_url")
@@ -496,7 +503,8 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
     else:
         p_steps.append(Step("Get Started › data collection", [
             Field("Collect data?", "Yes, we collect data from this app" if collects else
-                  "No, we do not collect data from this app", "choose")]))
+                  "No, we do not collect data from this app", "choose",
+                  note="Data Not Collected" if not collects else None)]))
         if collects and rows:
             p_steps.append(Step("Tick these data types, then Save",
                                 [Field(r["category"] or "Data type", r["type"], "choose") for r in rows]))
@@ -627,11 +635,11 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
             Field("Phased Release for Automatic Updates", "not shown for a first version", "info"),
             Field("Reset Overview Rating", "not shown for a first version", "info")]))
     else:
-        ph_a, ph_why, ph_j = answer(ver.get("phased_release", False))
+        ph_a, ph_why, ph_j = answer(ver.get("phased_release", conn.get("phased_release", True)))
         rr_a, rr_why, rr_j = answer(ver.get("reset_ratings", False))
         v_steps.append(Step("Phased release and rating reset", [
             Field("Phased Release for Automatic Updates",
-                  "Release update over 7-day period using phased release" if ph_a in (True, "Yes")
+                  "Release update over 7-day period using phased release" if phased_release(conn, False)
                   else "Release update to all users immediately", "choose", judgement=ph_j, why=ph_why),
             Field("Reset Overview Rating", yes_no(rr_a), "choose", judgement=rr_j, why=rr_why)]))
     idfa = ver.get("idfa")
@@ -799,20 +807,95 @@ def private_values(private):
         elif isinstance(v, list):
             for x in v:
                 walk(x)
-        elif v is not None and len(str(v).strip()) >= 4:
-            out.append(str(v).strip())
+        elif v is not None and not isinstance(v, bool) and str(v):
+            out.append(str(v))
     walk(private or {})
     return out
 
 
-def mask(text, pvals):
-    """Replace every private value in text with [private]. Phone-like values also match with other separators."""
-    for v in sorted(pvals, key=len, reverse=True):
-        text = text.replace(v, MASK)
+def phone_like(value):
+    return bool(re.fullmatch(r"[0-9 +().\-]+", value) and re.search(r"[0-9]", value))
+
+
+def phased_release(connect, first_version):
+    """Updates default to phased release; first versions have no phased release setting."""
+    if first_version:
+        return None
+    value = (connect.get("version") or {}).get("phased_release", connect.get("phased_release", True))
+    value, _, _ = answer(value)
+    return value is True or str(value).lower() in ("yes", "true")
+
+
+SHORT = 4   # private values shorter than this aren't masked inside free text: as substrings they'd hit numbers
+
+
+def _forms(pvals, short=SHORT):
+    """The text forms of each private value worth searching for: raw, HTML- and JSON-escaped, stripped, and each
+    line of a multi-line value. Values shorter than `short` are skipped."""
+    forms, phones = set(), []
+    for value in pvals:
+        if value is None or isinstance(value, bool) or not str(value):
+            continue
+        v = str(value)
+        raw = {v, v.strip(), v.replace("\r\n", "\n")}
+        if "\n" in v.strip():
+            raw |= {ln.strip() for ln in v.splitlines()}
+        for r in raw:
+            if len(r) < short:
+                continue
+            escaped = {r, html.escape(r)}
+            for ascii_only in (True, False):
+                escaped.add(json.dumps(r, ensure_ascii=ascii_only)[1:-1])
+                escaped.add(json.dumps(html.escape(r), ensure_ascii=ascii_only)[1:-1])
+            forms.update(escaped)
+            forms.update(html.escape(x) for x in escaped)
         digits = re.sub(r"\D", "", v)
-        if len(digits) >= 6:
-            text = re.sub(r"\+?" + r"[\s().\-]*".join(digits), MASK, text)
-    return text
+        if phone_like(v) and len(digits) >= 6:
+            phones.append(r"\+?" + r"[\s().\-]*".join(digits))
+    return [re.escape(v) for v in sorted(forms, key=len, reverse=True)] + phones
+
+
+def mask(text, pvals):
+    """Mask private values in free text (Markdown, HTML, a printed line): raw, HTML/JSON-escaped, multi-line ones
+    line by line, phone numbers in any spacing. Values under SHORT characters are left alone here (they'd corrupt
+    numbers); they're masked where a whole value is one (mask_obj) or where [private] is put in instead of the value.
+    Never run this over serialized JSON/YAML: mask the data with mask_obj first, then serialize it."""
+    patterns = _forms(pvals)
+    return re.sub("|".join(patterns), lambda _: MASK, text) if patterns else text
+
+
+def mask_obj(value, pvals):
+    """A copy of a data structure (dicts, lists, strings, numbers) with private values masked, for JSON/YAML output:
+    a string or number that is a private value (any length; numbers from SHORT digits) becomes [private], and longer
+    private values are masked inside strings and keys. Unchanged leaves keep their type."""
+    exact = {str(v).strip() for v in pvals if v is not None and not isinstance(v, bool) and str(v).strip()}
+
+    def walk(v):
+        if isinstance(v, dict):
+            return {walk_key(k): walk(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [walk(x) for x in v]
+        if isinstance(v, str):
+            if v.strip() in exact:
+                return MASK
+            m = mask(v, pvals)
+            return m if m != v else v
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return MASK if len(str(v)) >= SHORT and str(v) in exact else v
+        return v
+
+    def walk_key(k):
+        return walk(k) if isinstance(k, str) else k
+    return walk(value)
+
+
+def mask_progress(value, pvals):
+    return mask_obj(value, pvals)
+
+
+def short_private_values(pvals):
+    """Private values too short to scrub from free text (see SHORT)."""
+    return [v for v in pvals if v is not None and not isinstance(v, bool) and 0 < len(str(v).strip()) < SHORT]
 
 
 def apply_progress(g, prog, private=None):
@@ -1096,12 +1179,16 @@ def main(argv=None):
     private = (priv_raw.get("review_contact") or {}) | {k: v for k, v in priv_raw.items() if not isinstance(v, dict)}
     pvals = private_values(priv_raw)  # masked in everything public, even with --no-private
     g = build(kit, a.locale, rules, private)
+    if short_private_values(pvals):
+        print(f"WARNING: private.yaml has a value shorter than {SHORT} characters. The guide never prints it where "
+              f"it belongs, but it can't be scrubbed from free text (it would match ordinary numbers and words): "
+              f"use a longer value, or check the public files by eye.", file=sys.stderr)
     prog_path = kit / PROGRESS_FILE
     if a.init_progress:
-        prog_path.write_text(PROGRESS_HEADER + yaml.safe_dump(progress_template(g, load_yaml(prog_path)),
+        prog_path.write_text(PROGRESS_HEADER + yaml.safe_dump(mask_progress(progress_template(g, load_yaml(prog_path)), pvals),
                                                               sort_keys=False, allow_unicode=True, width=120))
         print(f"wrote {prog_path.name}")
-    if prog_path.exists() and pvals and mask(prog_path.read_text(), pvals) != prog_path.read_text():
+    if prog_path.exists() and pvals and mask_obj(load_yaml(prog_path), pvals) != load_yaml(prog_path):
         print(f"WARNING: {prog_path.name} contains a private.yaml value. Replace it with {MASK}; "
               f"the public guide masks it.", file=sys.stderr)
     (kit / "CONNECT-GUIDE.md").write_text(mask(render_md(g), pvals))
@@ -1115,7 +1202,7 @@ def main(argv=None):
             if git_ignored(p) is False:
                 print(f"WARNING: {p.name} is not gitignored. Add it to .gitignore before committing.", file=sys.stderr)
     for p in g["problems"]:
-        print(f"problem: {p}", file=sys.stderr)
+        print(mask(f"problem: {p}", pvals), file=sys.stderr)
     judgement = sum(f.judgement for s in g["sections"] for st in s.steps for f in st.fields)
     print(f"wrote {', '.join(written)} in {kit} ({len(g['sections'])} screens, {judgement} {HAND} answers)")
     for ln in progress_md(g):

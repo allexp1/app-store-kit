@@ -208,18 +208,64 @@ def test_plan_update_creates_version_and_whats_new_only(tmp_path):
     assert "01.jpg | unchanged |" in md and "02.jpg | unchanged |" in md
 
 
-def test_plan_screenshot_replace_and_size_fallback(tmp_path):
+def test_plan_without_a_recorded_hash_keeps_same_size_files_but_flags_them(tmp_path, capsys):
     kit = make_kit(tmp_path, version="1.1.0", first=False)
     fake = FakeASC()
     seed_update(fake, kit)
-    (kit / "connect-assets.json").unlink()                      # no hash map: fall back to fileSize
-    jpeg(kit / "screenshots/en-US/iphone-di-medium/02.jpg", "yellow", size=(90, 180))
+    (kit / "connect-assets.json").unlink()                      # uploaded before sha256 tracking
+    jpeg(kit / "screenshots/en-US/iphone-di-medium/02.jpg", "yellow", size=(90, 180))   # another size
     jpeg(kit / "screenshots/en-US/iphone-di-medium/03.jpg", "white")
     run(fake, "plan", str(kit), "--only", "media")
     pj = json.loads((kit / "connect-plan.json").read_text())
     slot = next(i for i in pj["items"] if i["op"] == "media_slot")
     assert [(r["action"], r.get("matched_by")) for r in slot["rows"]] == [
-        ("unchanged", "fileSize"), ("replace", "fileSize"), ("add", None)]
+        ("unchanged", "fileSize (unverified)"), ("replace", "fileSize"), ("add", None)]
+    assert any("matched by size only" in w and "01.jpg" in w for w in pj["warnings"])
+    assert "01.jpg | unchanged (matched by size only" in (kit / "connect-plan.md").read_text()
+    run(fake, "plan", str(kit), "--only", "media", "--reupload-unverified")
+    slot = next(i for i in json.loads((kit / "connect-plan.json").read_text())["items"] if i["op"] == "media_slot")
+    assert [(r["action"], r.get("matched_by")) for r in slot["rows"]] == [
+        ("replace", "unknown"), ("replace", "fileSize"), ("add", None)]
+    assert "--reupload-unverified" in slot["rows"][0]["why"]
+
+
+def test_apply_previews_keeps_size_matched_screenshots_untouched_on_the_next_plan(tmp_path, capsys):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    (kit / "connect-assets.json").unlink()
+    for n in ("01.mp4", "02.mp4"):
+        f = kit / "previews/en-US/iphone-di-medium" / n
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(n.encode() * 100)
+    run(fake, "plan", str(kit), "--only", "media")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert [i["title"] for i in pj["items"] if i["op"] == "media_slot"] == ["Previews iphone-di-medium (en-US)"]
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    assert len(fake.of_type("appAssetLibraryVideos")) == 2 and len(fake.of_type("appAssetLibraryImages")) == 2
+    assets = json.loads((kit / "connect-assets.json").read_text())["assets"]
+    assert "img0" not in assets and "img1" not in assets, "a size-matched file's sha256 is never recorded"
+    run(fake, "plan", str(kit), "--only", "media")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert pj["items"] == []
+    md = (kit / "connect-plan.md").read_text()
+    assert "01.jpg | unchanged (matched by size only" in md and "01.mp4 | unchanged |" in md
+
+
+def test_plan_compares_a_live_checksum_when_there_is_no_recorded_hash(tmp_path):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    (kit / "connect-assets.json").unlink()
+    shot = kit / "screenshots/en-US/iphone-di-medium"
+    fake.store["img0"]["attributes"]["sourceFileChecksum"] = hashlib.md5((shot / "01.jpg").read_bytes()).hexdigest()
+    jpeg(shot / "02.jpg", "yellow")                             # other bytes, recorded as the same size
+    fake.store["img1"]["attributes"]["fileSize"] = (shot / "02.jpg").stat().st_size
+    fake.store["img1"]["attributes"]["sourceFileChecksum"] = "0" * 32
+    run(fake, "plan", str(kit), "--only", "media")
+    slot = next(i for i in json.loads((kit / "connect-plan.json").read_text())["items"] if i["op"] == "media_slot")
+    assert [(r["action"], r.get("matched_by")) for r in slot["rows"]] == [("unchanged", "checksum"),
+                                                                         ("replace", "checksum")]
 
 
 # ------------------------------------------------------------------------------------------------ apply
@@ -474,3 +520,567 @@ def test_creative_groups_come_from_the_ref_data_not_a_constant():
                                                        "APP_STORE_SEARCH_RESULTS_ASSET": "DEFAULT_PROFILE"}
     # the DEFAULT_PROFILE group (platform ANY) never becomes a screenshot group
     assert "DEFAULT" not in sync.placement_groups(FakeASC().refdata)
+
+
+# ------------------------------------------------------------------------------------------------ audit fixes
+def test_private_values_compare_by_digits_only_when_they_look_like_phone_numbers():
+    priv = {"phone": "+1 (555) 010-9999", "demo_password": "new123456"}
+    assert sync.diff({"contactPhone": "+15550109999"}, {"contactPhone": {"$private": "phone"}}, private=priv) == []
+    ch = sync.diff({"demoAccountPassword": "old123456"}, {"demoAccountPassword": {"$private": "demo_password"}},
+                   private=priv)
+    assert [c["field"] for c in ch] == ["demoAccountPassword"] and ch[0]["new"] == "[private]"
+    assert sync.diff({"demoAccountPassword": "new123456"},
+                     {"demoAccountPassword": {"$private": "demo_password"}}, private=priv) == []
+
+
+def test_empty_optional_text_clears_and_absent_text_is_left_alone(tmp_path, capsys):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    fake.store["vloc-en"]["attributes"]["marketingUrl"] = "https://example.com/old"
+    m = yaml.safe_load((kit / "metadata.en-US.yaml").read_text())
+    m["promotional_text"] = ""                     # present and empty: clear it
+    m["subtitle"] = None                           # present and null: clear it too
+    m.pop("description")                           # absent: leave the live text alone
+    (kit / "metadata.en-US.yaml").write_text(yaml.safe_dump(m, allow_unicode=True))
+    run(fake, "plan", str(kit), "--only", "text")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    en = next(i for i in pj["items"] if i["op"] == "version_loc" and i["locale"] == "en-US")
+    assert en["attributes"] == {"promotionalText": None, "whatsNew": "Faster swiping."}
+    info = next(i for i in pj["items"] if i["op"] == "appinfo_loc" and i["locale"] == "en-US")
+    assert info["attributes"] == {"subtitle": None}
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    new = next(v for v in fake.of_type("appStoreVersions") if v["attributes"]["versionString"] == "1.1.0")
+    loc = next(r for r in fake.of_type("appStoreVersionLocalizations") if r["attributes"]["locale"] == "en-US"
+               and r["relationships"]["appStoreVersion"]["data"]["id"] == new["id"])
+    assert loc["attributes"]["promotionalText"] is None and loc["attributes"]["description"]
+    assert loc["attributes"]["marketingUrl"] == "https://example.com/old"   # not in the kit: untouched
+
+
+def test_apply_refuses_when_a_planned_file_changed(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit))
+    assert json.loads((kit / "connect-plan.json").read_text())["fingerprint"]["files"]
+    jpeg(kit / "screenshots/en-US/iphone-di-medium/01.jpg", "black")
+    capsys.readouterr()
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    out = capsys.readouterr().out
+    assert code == 1 and fake.writes() == []
+    assert "re-run plan" in out.lower() and "01.jpg changed after the plan" in out
+
+
+def test_apply_refuses_when_the_live_media_changed(tmp_path, capsys):
+    kit = make_kit(tmp_path, version="1.0.0")
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "media")
+    fake.add("appAssetLibraryImages", {"fileName": "x.jpg", "fileSize": 1}, id="imgX")
+    fake.add("appAssetLibraryPlacements", {"placementType": "APP_SCREENSHOT",
+                                           "placementGroup": "IPHONE_DYNAMIC_ISLAND_MEDIUM_PROFILE",
+                                           "placementGroupPosition": 1},
+             {"image": ("appAssetLibraryImages", "imgX"),
+              "appStoreVersionLocalization": ("appStoreVersionLocalizations", "vloc-en")})
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 1 and fake.writes() == []
+    assert "live files changed after the plan" in capsys.readouterr().out
+
+
+def test_apply_media_runs_only_the_plans_rows(tmp_path):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    jpeg(kit / "screenshots/en-US/iphone-di-medium/02.jpg", "yellow", size=(90, 180))
+    run(fake, "plan", str(kit), "--only", "media")
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0
+    new = next(v for v in fake.of_type("appStoreVersions") if v["attributes"]["versionString"] == "1.1.0")
+    new_loc = next(r["id"] for r in fake.of_type("appStoreVersionLocalizations") if r["attributes"]["locale"] == "en-US"
+                   and r["relationships"]["appStoreVersion"]["data"]["id"] == new["id"])
+    placed = sorted((p for p in fake.of_type("appAssetLibraryPlacements")
+                     if p["relationships"]["appStoreVersionLocalization"]["data"]["id"] == new_loc),
+                    key=lambda p: p["attributes"]["placementGroupPosition"])
+    assert placed[0]["relationships"]["image"]["data"]["id"] == "img0"      # kept
+    assert placed[1]["relationships"]["image"]["data"]["id"] not in ("img0", "img1")   # replaced
+    assert len([w for w in fake.writes() if w[0] == "DELETE"]) == 1
+
+
+def test_replayed_plan_is_refused(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit))
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert pj["applied"]["at"] and all(r["result"] == "done" for r in pj["applied"]["results"])
+    n = len(fake.writes())
+    capsys.readouterr()
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 1 and len(fake.writes()) == n and "already applied" in capsys.readouterr().out
+
+
+def test_apply_only_consumes_just_those_areas(tmp_path):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit))
+    assert run(fake, "apply", str(kit), "--yes", "--only", "age")[0] == 0
+    assert run(fake, "apply", str(kit), "--yes", "--only", "age")[0] == 1
+    assert run(fake, "apply", str(kit), "--yes", "--only", "review")[0] == 0
+
+
+def test_partial_failure_then_replan_picks_up_what_exists(tmp_path, capsys):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    run(fake, "plan", str(kit), "--only", "text,release")
+    fail_on = [None]
+
+    def fail_whats_new(r):   # the new version exists; its localization PATCH will fail
+        loc = next(x for x in fake.of_type("appStoreVersionLocalizations") if x["attributes"]["locale"] == "de-DE"
+                   and x["relationships"]["appStoreVersion"]["data"]["id"] != "ver1")
+        fail_on[0] = loc["id"]
+        fake.fail[("PATCH", f"/v1/appStoreVersionLocalizations/{loc['id']}")] = (409, "ENTITY_ERROR")
+    orig = fake.on_create["appStoreVersions"]
+    fake.on_create["appStoreVersions"] = lambda r: (orig(r), fail_whats_new(r))
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 1
+    assert run(fake, "apply", str(kit), "--yes")[0] == 1, "a partly applied plan isn't replayed"
+    del fake.fail[("PATCH", f"/v1/appStoreVersionLocalizations/{fail_on[0]}")]
+    run(fake, "plan", str(kit), "--only", "text,release")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert pj["version"]["action"] == "use"
+    assert [(i["op"], i.get("locale")) for i in pj["items"]] == [("version_loc", "de-DE")]
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0
+    assert len([v for v in fake.of_type("appStoreVersions") if v["attributes"]["versionString"] == "1.1.0"]) == 1
+    assert len(fake.of_type("appStoreVersionPhasedReleases")) == 1
+
+
+def test_create_steps_reuse_what_an_earlier_run_made(tmp_path):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    run(fake, "plan", str(kit), "--only", "text,release")
+    fake.add("appStoreVersions", {"versionString": "1.1.0", "appVersionState": "PREPARE_FOR_SUBMISSION",
+                                  "platform": "IOS"}, {"app": ("apps", "app1")}, id="ver2")
+    fake.add("appStoreVersionPhasedReleases", {"phasedReleaseState": "INACTIVE"},
+             {"appStoreVersion": ("appStoreVersions", "ver2")})
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0
+    assert ("POST", "/v1/appStoreVersions") not in fake.writes()
+    assert ("POST", "/v1/appStoreVersionPhasedReleases") not in fake.writes()
+
+
+def draft(fake, *targets):
+    sub = fake.add("reviewSubmissions", {"platform": "IOS", "state": "READY_FOR_REVIEW"}, {"app": ("apps", "app1")},
+                   id="sub1")
+    for rel, typ, oid in targets:
+        fake.add("reviewSubmissionItems", {"state": "READY_FOR_REVIEW"},
+                 {"reviewSubmission": ("reviewSubmissions", sub), rel: (typ, oid)})
+    return sub
+
+
+def test_submit_refuses_a_draft_with_items_nobody_asked_for(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake, iap_state="APPROVED")
+    fake.add("appEvents", {"referenceName": "Old event", "eventState": "READY_FOR_REVIEW"}, id="ev9")
+    draft(fake, ("appEvent", "appEvents", "ev9"))
+    code, _ = run(fake, "submit", str(kit), "--yes")
+    out = capsys.readouterr().out
+    assert code == 1 and fake.writes() == []
+    assert "in-app event ev9" in out and "--include-draft-items" in out
+    assert run(fake, "submit", str(kit), "--include-draft-items")[0] == 2 and fake.writes() == []
+    code, _ = run(fake, "submit", str(kit), "--include-draft-items", "--yes")
+    assert code == 0
+    assert fake.writes() == [("POST", "/v1/reviewSubmissionItems"), ("PATCH", "/v1/reviewSubmissions/sub1")]
+
+
+def test_submit_adds_the_requested_version_even_when_another_version_is_in_the_draft(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake, iap_state="APPROVED")
+    fake.add("appStoreVersions", {"versionString": "0.9", "appVersionState": "PREPARE_FOR_SUBMISSION", "platform": "IOS"},
+             {"app": ("apps", "app1")}, id="ver0")
+    draft(fake, ("appStoreVersion", "appStoreVersions", "ver0"))
+    assert run(fake, "submit", str(kit), "--yes")[0] == 1
+    assert "app version 0.9 (ver0)" in capsys.readouterr().out
+    assert run(fake, "submit", str(kit), "--yes", "--include-draft-items")[0] == 0
+    items = {i["relationships"]["appStoreVersion"]["data"]["id"] for i in fake.of_type("reviewSubmissionItems")}
+    assert items == {"ver0", "ver1"}
+
+
+def test_submit_does_not_add_a_version_twice(tmp_path):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake, iap_state="APPROVED")
+    draft(fake, ("appStoreVersion", "appStoreVersions", "ver1"))
+    assert run(fake, "submit", str(kit), "--yes")[0] == 0
+    assert fake.writes() == [("PATCH", "/v1/reviewSubmissions/sub1")]
+
+
+def test_submit_first_iap_check_needs_that_purchase_in_the_draft(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    fake.add("appEvents", {"referenceName": "Old event", "eventState": "READY_FOR_REVIEW"}, id="ev9")
+    draft(fake, ("appEvent", "appEvents", "ev9"))
+    code, _ = run(fake, "submit", str(kit), "--yes", "--include-draft-items")
+    assert code == 1 and fake.writes() == []
+    assert "first in-app purchase" in capsys.readouterr().out
+
+
+def test_submit_first_iap_by_its_version_in_the_draft(tmp_path):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    draft(fake, ("inAppPurchaseVersion", "inAppPurchaseVersions", "iapv1"))
+    assert run(fake, "submit", str(kit), "--yes")[0] == 0
+    assert fake.writes() == [("POST", "/v1/reviewSubmissionItems"), ("PATCH", "/v1/reviewSubmissions/sub1")]
+
+
+def test_submit_refuses_automatic_release_without_the_owners_ok(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake, iap_state="APPROVED")
+    fake.store["ver1"]["attributes"]["releaseType"] = "AFTER_APPROVAL"
+    code, _ = run(fake, "submit", str(kit), "--yes")
+    out = capsys.readouterr().out
+    assert code == 1 and fake.writes() == []
+    assert "approval will release the app automatically" in out.lower() and "--auto-release-ok" in out
+    assert run(fake, "submit", str(kit), "--yes", "--auto-release-ok")[0] == 0
+
+
+def test_plan_and_apply_say_when_approval_releases_automatically(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    c = yaml.safe_load((kit / "connect.yaml").read_text())
+    c["version"]["release"] = "after_approval"
+    (kit / "connect.yaml").write_text(yaml.safe_dump(c))
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "release")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert pj["auto_release"] == "AFTER_APPROVAL"
+    assert "approval will release the app automatically" in (kit / "connect-plan.md").read_text()
+    capsys.readouterr()
+    run(fake, "apply", str(kit), "--yes")
+    assert "approval will release the app automatically" in capsys.readouterr().out
+
+
+def test_release_all_completes_a_running_phased_release(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake, version_state="READY_FOR_DISTRIBUTION")
+    ph = fake.add("appStoreVersionPhasedReleases", {"phasedReleaseState": "INACTIVE"},
+                  {"appStoreVersion": ("appStoreVersions", "ver1")})
+    assert run(fake, "release", str(kit), "--all", "--yes")[0] == 1
+    fake.store[ph]["attributes"]["phasedReleaseState"] = "PAUSED"
+    assert run(fake, "release", str(kit), "--all")[0] == 2 and fake.writes() == []
+    assert run(fake, "release", str(kit), "--all", "--yes")[0] == 0
+    assert fake.store[ph]["attributes"]["phasedReleaseState"] == "COMPLETE"
+    assert run(fake, "release", str(kit), "--all", "--pause", "--yes")[0] == 2
+
+
+def test_top_level_phased_release_is_an_alias(tmp_path):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    c = yaml.safe_load((kit / "connect.yaml").read_text())
+    c["version"].pop("phased_release")
+    c["phased_release"] = False
+    (kit / "connect.yaml").write_text(yaml.safe_dump(c))
+    fake = FakeASC()
+    seed_update(fake, kit)
+    run(fake, "plan", str(kit), "--only", "release")
+    assert "phased_release" not in [i["op"] for i in json.loads((kit / "connect-plan.json").read_text())["items"]]
+
+
+def test_fake_rejects_wrong_api_version_and_body_shape():
+    fake = FakeASC()
+    seed(fake)
+    c = api.Client(lambda: "TOKEN", transport=fake, sleep=lambda s: None)
+    with pytest.raises(AssertionError, match="lives under /v2"):
+        c.get("/v1/inAppPurchases/iap1/inAppPurchaseVersions")
+    with pytest.raises(AssertionError, match="lives under /v1"):
+        c.get("/v2/apps/app1")
+    with pytest.raises(AssertionError, match="doesn't match the path"):
+        c.post("/v1/appStoreVersions", {"data": {"type": "appStoreVersion", "attributes": {}}})
+    with pytest.raises(AssertionError, match="relationship"):
+        c.post("/v1/appStoreVersions", {"data": {"type": "appStoreVersions",
+                                                 "relationships": {"app": {"type": "apps", "id": "app1"}}}})
+    with pytest.raises(AssertionError, match="isn't the path's id"):
+        c.patch("/v1/apps/app1", {"data": {"type": "apps", "id": "app2", "attributes": {}}})
+
+
+def test_growth_apply_never_changes_visibility_release_does(tmp_path, capsys):
+    from test_growth import GROWTH, growth_kit, live_app, plan   # test_growth imports this module
+    data = {"custom_product_pages": [dict(GROWTH["custom_product_pages"][0], visible=False)]}
+    kit = growth_kit(tmp_path, data)
+    fake = FakeASC()
+    live_app(fake)
+    pj = plan(fake, kit)
+    run(fake, "apply", str(kit), "--yes")
+    page = fake.of_type("appCustomProductPages")[0]
+    assert page["attributes"]["visible"] is True
+    assert not any(m == "PATCH" and p.startswith("/v1/appCustomProductPages/") for m, p in fake.writes())
+    pj = plan(fake, kit)
+    assert any("--cpp-visibility storage=off" in n for n in pj["notes"])
+    n = len(fake.writes())
+    assert run(fake, "release", str(kit), "--cpp-visibility", "storage=off")[0] == 2 and len(fake.writes()) == n
+    assert run(fake, "release", str(kit), "--cpp-visibility", "storage=off", "--yes")[0] == 0
+    assert page["attributes"]["visible"] is False
+    assert run(fake, "release", str(kit), "--cpp-visibility", "nope=on", "--yes")[0] == 2
+
+
+def test_cpp_deep_link_set_empty_clears_it(tmp_path, capsys):
+    from test_growth import GROWTH, growth_kit, live_app, plan
+    kit = growth_kit(tmp_path, {"custom_product_pages": GROWTH["custom_product_pages"]})
+    fake = FakeASC()
+    live_app(fake)
+    plan(fake, kit)
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0
+    data = yaml.safe_load((kit / "growth.yaml").read_text())
+    data["custom_product_pages"][0]["deep_link"] = ""
+    (kit / "growth.yaml").write_text(yaml.safe_dump(data))
+    pj = plan(fake, kit)
+    assert any(c["field"] == "deep link" for c in pj["items"][0]["changes"])
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    assert fake.of_type("appCustomProductPageVersions")[0]["attributes"]["deepLink"] is None
+
+
+@pytest.mark.parametrize("change, words", [
+    (lambda fake: fake.store["ver1"]["attributes"].update(versionString="9.0"), "is now 9.0"),
+    (lambda fake: fake.store["ver1"]["attributes"].update(appVersionState="WAITING_FOR_REVIEW"),
+     "is now WAITING_FOR_REVIEW"),
+    (lambda fake: fake.store.pop("ver1"), "is gone"),
+])
+def test_apply_refuses_when_the_planned_version_moved(tmp_path, capsys, change, words):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "age")
+    fp = json.loads((kit / "connect-plan.json").read_text())["fingerprint"]
+    assert fp["version_id"] == "ver1" and fp["version_string"] == "1.0.0"
+    assert fp["version_state"] == "PREPARE_FOR_SUBMISSION"
+    change(fake)
+    capsys.readouterr()
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    out = capsys.readouterr().out
+    assert code == 1 and fake.writes() == []
+    assert "Refused" in out and words in out
+
+
+def test_submit_refuses_an_unreadable_draft_item_without_the_automatic_release_ok(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake, iap_state="APPROVED")
+    sub = draft(fake)
+    fake.add("reviewSubmissionItems", {"state": "READY_FOR_REVIEW"}, {"reviewSubmission": ("reviewSubmissions", sub)})
+    code, _ = run(fake, "submit", str(kit), "--yes", "--include-draft-items")
+    out = capsys.readouterr().out
+    assert code == 1 and fake.writes() == [] and "can't be read" in out
+    assert run(fake, "submit", str(kit), "--yes", "--include-draft-items", "--auto-release-ok")[0] == 0
+
+
+def test_numeric_password_is_not_compared_like_a_phone():
+    ch = sync.diff({"demoAccountPassword": "123-456"}, {"demoAccountPassword": {"$private": "demo_password"}},
+                   private={"demo_password": "123456"})
+    assert [c["field"] for c in ch] == ["demoAccountPassword"]
+    assert sync.diff({"contactPhone": "123-456"}, {"contactPhone": {"$private": "phone"}},
+                     private={"phone": "123456"}) == []
+
+
+def test_one_character_private_value_keeps_the_plan_valid_json(tmp_path):
+    kit = make_kit(tmp_path)
+    c = yaml.safe_load((kit / "connect.yaml").read_text())
+    c["sign_in_required"] = True
+    (kit / "connect.yaml").write_text(yaml.safe_dump(c))
+    (kit / "private.yaml").write_text(yaml.safe_dump({"review_contact": {"phone": PHONE},
+                                                      "demo": {"demo_user": "ada", "demo_password": "1"}}))
+    fake = FakeASC()
+    seed(fake)
+    assert run(fake, "plan", str(kit))[0] == 0
+    pj = json.loads((kit / "connect-plan.json").read_text())       # valid JSON
+    review = next(i for i in pj["items"] if i["op"] == "review_detail")
+    assert review["desired"]["demoAccountPassword"] == {"$private": "demo_password"}
+    assert "screenshots/en-US/iphone-di-medium/01.jpg" in (kit / "connect-plan.md").read_text()
+    assert run(fake, "apply", str(kit), "--yes", "--only", "review")[0] == 0
+    detail = fake.of_type("appStoreReviewDetails")[0]["attributes"]
+    assert detail["demoAccountPassword"] == "1"
+    json.loads((kit / "connect-plan.json").read_text())             # still valid once marked applied
+
+
+def test_write_progress_masks_a_multiline_secret(tmp_path):
+    kit = make_kit(tmp_path)
+    (kit / "private.yaml").write_text(yaml.safe_dump({"review_contact": {"phone": PHONE},
+                                                      "notes": "alpha-secret-line\nbeta-secret-line"}))
+    k = sync.Kit(kit)
+    sync.write_progress(k, {"review/x": {"live": {"Notes": "alpha-secret-line\nbeta-secret-line"},
+                                         "notes": ["kept alpha-secret-line"]}})
+    text = (kit / "connect-progress.yaml").read_text()
+    assert "alpha-secret-line" not in text and "beta-secret-line" not in text
+    assert yaml.safe_load(text)["steps"]["review/x"]["live"]["Notes"] == "[private]"
+
+
+# ------------------------------------------------------------------------------------------------ IAP price, type
+def price_points(fake, iap, *prices):
+    return {p: fake.add("inAppPurchasePricePoints", {"customerPrice": p, "proceeds": p},
+                        {"inAppPurchase": ("inAppPurchases", iap)}) for p in prices}
+
+
+def set_price(fake, iap, point):
+    fake.add("inAppPurchasePrices", {"startDate": None}, {"inAppPurchaseV2": ("inAppPurchases", iap),
+                                                         "inAppPurchasePricePoint": ("inAppPurchasePricePoints", point)})
+
+
+def test_iap_price_is_planned_from_apples_price_points_and_applied(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    pts = price_points(fake, "iap1", "1.99", "2.99", "3.99")
+    set_price(fake, "iap1", pts["1.99"])
+    run(fake, "plan", str(kit), "--only", "iap")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    it = next(i for i in pj["items"] if i["op"] == "iap")
+    assert it["price"] == {"territory": "USA", "customer_price": "2.99", "point_id": pts["2.99"], "old": "1.99",
+                           "old_point": pts["1.99"]}
+    assert any(c["field"] == "price (USA)" for c in it["changes"])
+    assert any("replaces the purchase's manual prices" in w for w in pj["warnings"])
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    post = next(js for m, p, _, js in fake.calls if m == "POST" and p == "/v1/inAppPurchasePriceSchedules")
+    assert post["data"]["relationships"]["baseTerritory"]["data"] == {"type": "territories", "id": "USA"}
+    assert post["included"][0]["relationships"]["inAppPurchasePricePoint"]["data"]["id"] == pts["2.99"]
+    prices = fake.of_type("inAppPurchasePrices")
+    assert len(prices) == 1 and prices[0]["relationships"]["inAppPurchasePricePoint"]["data"]["id"] == pts["2.99"]
+    run(fake, "plan", str(kit), "--only", "iap")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert not any(i.get("price") for i in pj["items"])
+
+
+def test_iap_price_without_an_exact_point_is_left_alone(tmp_path):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    pts = price_points(fake, "iap1", "1.99", "3.99")
+    set_price(fake, "iap1", pts["1.99"])
+    run(fake, "plan", str(kit), "--only", "iap")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert not any(i.get("price") for i in pj["items"])
+    assert any("no price point of exactly 2.99 in USA" in w for w in pj["warnings"])
+
+
+def test_iap_price_moved_after_the_plan_is_refused(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    pts = price_points(fake, "iap1", "1.99", "2.99", "4.99")
+    set_price(fake, "iap1", pts["1.99"])
+    run(fake, "plan", str(kit), "--only", "iap")
+    for p in fake.of_type("inAppPurchasePrices"):
+        p["relationships"]["inAppPurchasePricePoint"]["data"]["id"] = pts["4.99"]
+    capsys.readouterr()
+    assert run(fake, "apply", str(kit), "--yes")[0] == 1
+    assert "live price changed" in capsys.readouterr().out and fake.writes() == []
+
+
+def test_new_iap_is_priced_after_it_is_created(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    del fake.store["iapv1"], fake.store["iap1"]
+    made = {}
+    fake.on_create["inAppPurchases"] = lambda r: made.update(price_points(fake, r["id"], "0.99", "2.99"))
+    run(fake, "plan", str(kit), "--only", "iap")
+    it = next(i for i in json.loads((kit / "connect-plan.json").read_text())["items"] if i["op"] == "iap")
+    assert it["create_iap"]["inAppPurchaseType"] == "NON_CONSUMABLE" and it["price"]["point_id"] is None
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    post = next(js for m, p, _, js in fake.calls if m == "POST" and p == "/v1/inAppPurchasePriceSchedules")
+    assert post["included"][0]["relationships"]["inAppPurchasePricePoint"]["data"]["id"] == made["2.99"]
+
+
+def test_unsupported_iap_type_is_a_plan_error(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    facts = yaml.safe_load((kit / "facts.yaml").read_text())
+    facts["monetization"]["iap"][0]["type"] = "Auto-Renewable Subscription"
+    (kit / "facts.yaml").write_text(yaml.safe_dump(facts))
+    fake = FakeASC()
+    seed(fake)
+    del fake.store["iapv1"], fake.store["iap1"]
+    code, _ = run(fake, "plan", str(kit), "--only", "iap")
+    out = capsys.readouterr().out
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert code == 1 and "error:" in out and "Auto-Renewable Subscription" in pj["errors"][0]
+    assert not any(i["op"] == "iap" for i in pj["items"])
+    assert "## Errors" in (kit / "connect-plan.md").read_text()
+    assert run(fake, "apply", str(kit), "--yes")[0] == 1 and fake.writes() == []
+
+
+def launched_with_purchases(fake):
+    seed(fake, version_state="READY_FOR_DISTRIBUTION", iap_state="APPROVED")
+    iap2 = fake.add("inAppPurchases", {"productId": "com.example.pebble.tips", "state": "READY_TO_SUBMIT"},
+                    {"app": ("apps", "app1")}, id="iap2")
+    fake.add("inAppPurchaseVersions", {"state": "PREPARE_FOR_SUBMISSION"},
+             {"inAppPurchase": ("inAppPurchases", iap2)}, id="iapv2")
+
+
+def kit_with_tips(tmp_path, first=False):
+    kit = make_kit(tmp_path, first=first)
+    facts = yaml.safe_load((kit / "facts.yaml").read_text())
+    facts["monetization"]["iap"].append({"product_id": "com.example.pebble.tips", "type": "Consumable",
+                                         "reference_name": "Tips", "display_name": "Tip jar",
+                                         "description": "Say thanks.", "price": "0.99 USD"})
+    (kit / "facts.yaml").write_text(yaml.safe_dump(facts))
+    return kit
+
+
+def test_submit_iap_after_launch_sends_only_that_purchase_version(tmp_path, capsys):
+    kit = kit_with_tips(tmp_path)
+    fake = FakeASC()
+    launched_with_purchases(fake)
+    assert run(fake, "submit", str(kit), "--iap", "com.example.pebble.tips")[0] == 2 and fake.writes() == []
+    assert run(fake, "submit", str(kit), "--iap", "com.example.pebble.tips", "--yes")[0] == 0
+    items = fake.of_type("reviewSubmissionItems")
+    assert len(items) == 1 and items[0]["relationships"]["inAppPurchaseVersion"]["data"]["id"] == "iapv2"
+    assert fake.of_type("reviewSubmissions")[0]["attributes"]["submitted"] is True
+    steps = yaml.safe_load((kit / "connect-progress.yaml").read_text())["steps"]
+    assert steps["iap/tip-jar-image-optional-tax-category-review-information"]["status"] == "done-by-claude"
+
+
+def test_submit_iap_keeps_the_draft_rules_and_refuses_the_first_purchase(tmp_path, capsys):
+    kit = kit_with_tips(tmp_path)
+    fake = FakeASC()
+    launched_with_purchases(fake)
+    fake.add("appEvents", {"referenceName": "Old event", "eventState": "READY_FOR_REVIEW"}, id="ev9")
+    draft(fake, ("appEvent", "appEvents", "ev9"))
+    assert run(fake, "submit", str(kit), "--iap", "com.example.pebble.tips", "--yes")[0] == 1
+    assert "in-app event ev9" in capsys.readouterr().out and fake.writes() == []
+    assert run(fake, "submit", str(kit), "--iap", "com.example.nope", "--yes")[0] == 1
+    # an app with no approved purchase: the first one goes from its own page with a version
+    fake2 = FakeASC()
+    seed(fake2, version_state="READY_FOR_DISTRIBUTION")
+    capsys.readouterr()
+    assert run(fake2, "submit", str(kit), "--iap", "com.example.pebble.pro", "--yes")[0] == 1
+    out = capsys.readouterr().out
+    assert "first purchase" in out and "Add for Review" in out and fake2.writes() == []
+
+
+def test_empty_keywords_and_review_notes_clear_and_absent_ones_stay(tmp_path, capsys):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    m = yaml.safe_load((kit / "metadata.en-US.yaml").read_text())
+    m["keywords"] = []                              # present and empty: clear the live keywords
+    (kit / "metadata.en-US.yaml").write_text(yaml.safe_dump(m, allow_unicode=True))
+    (kit / "review-notes.md").write_text("# Notes\n\n---\n\n---\n")   # the notes file is there but empty
+    run(fake, "plan", str(kit), "--only", "text,review")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    en = next(i for i in pj["items"] if i["op"] == "version_loc" and i["locale"] == "en-US")
+    assert en["attributes"]["keywords"] is None
+    rd = next(i for i in pj["items"] if i["op"] == "review_detail")
+    assert rd["desired"]["notes"] is None
+    # absent: no keywords key and no notes file leave both alone
+    m.pop("keywords")
+    (kit / "metadata.en-US.yaml").write_text(yaml.safe_dump(m, allow_unicode=True))
+    (kit / "review-notes.md").unlink()
+    run(fake, "plan", str(kit), "--only", "text,review")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    for i in pj["items"]:
+        if i.get("locale") in ("en-US", None):
+            assert "keywords" not in (i.get("desired") or {}) and "notes" not in (i.get("desired") or {}), i

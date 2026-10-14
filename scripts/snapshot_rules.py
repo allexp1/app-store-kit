@@ -55,14 +55,18 @@ def check(rules_path) -> int:
     rules = load(rules_path)
     changed = 0
     for s in rules["sources"]:
+        if not s.get("text_sha256"):
+            print(f"no baseline {s['id']}: {s['url']}")
+            changed += 1
+            continue
         try:
             h = text_hash(s["url"])
         except Exception as e:  # network errors are reported, never hidden
             print(f"ERROR   {s['id']}: {e}")
             changed += 1
             continue
-        if s.get("text_sha256") in (None, h):
-            print(f"same    {s['id']}" + ("" if s.get("text_sha256") else " (no baseline hash)"))
+        if s["text_sha256"] == h:
+            print(f"same    {s['id']}")
         else:
             print(f"CHANGED {s['id']}: {s['url']}\n        was {s['text_sha256'][:16]}… now {h[:16]}…  -> re-read the page")
             changed += 1
@@ -75,28 +79,33 @@ def freeze(kit_dir) -> int:
     kit.mkdir(parents=True, exist_ok=True)
     rules = load(DEFAULT_RULES)
     baseline = {s["id"]: s.get("text_sha256") for s in rules["sources"]}
-    drift = []
+    drift, failed = [], []
+    today = dt.date.today().isoformat()
     for s in rules["sources"]:
+        s.setdefault("fetched", rules.get("fetched"))
         try:
             s["text_sha256"] = text_hash(s["url"])
         except Exception as e:
             print(f"ERROR fetching {s['id']}: {e}")
-            s["text_sha256"] = None
-            drift.append(s["id"])
+            failed.append(s["id"])
             continue
-        if baseline[s["id"]] and baseline[s["id"]] != s["text_sha256"]:
+        s["fetched"] = today
+        if not baseline[s["id"]] or baseline[s["id"]] != s["text_sha256"]:
             drift.append(s["id"])
     rules["skill_baseline_fetched"] = rules.get("fetched")
-    rules["fetched"] = dt.date.today().isoformat()
+    if not failed:
+        rules["fetched"] = today
     rules["frozen_for_kit"] = True
     out = kit / "rules.json"
     out.write_text(json.dumps(rules, indent=2) + "\n")
     print(f"wrote {out}")
+    if failed:
+        print("WARNING: fetch failed; baseline hashes and fetched dates retained: " + ", ".join(failed))
     if drift:
-        print("WARNING: these pages differ from the skill's baseline; read them and update "
+        print("WARNING: these pages differ from or have no skill baseline; read them and update "
               f"{out} before validating: {', '.join(drift)}")
         return 3
-    return 0
+    return 3 if failed else 0
 
 
 if __name__ == "__main__":

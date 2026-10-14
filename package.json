@@ -1,6 +1,6 @@
 {
   "name": "app-store-kit",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A Claude skill that takes an iOS/iPadOS app from code to the App Store and keeps it updated: code pre-check against Apple's rules, product page in every language, screenshots, build upload, and App Store Connect filled through the official API.",
   "bin": {
     "app-store-kit": "bin/install.js"

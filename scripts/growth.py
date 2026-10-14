@@ -115,9 +115,14 @@ def load(kit):
                 P(f"custom product page {i} {loc}: promotional text is {len(str(promo))} characters "
                   f"(limit {PROMO_MAX})")
             locs[str(loc)] = {"promotional_text": promo, "keywords": _keywords(v.get("keywords"))}
+            if "promotional_text" in v and promo is None:
+                locs[str(loc)]["promotional_text"] = ""   # present but empty: clear it on Apple's side
+            elif "promotional_text" not in v:
+                del locs[str(loc)]["promotional_text"]    # absent: leave Apple's value alone
         if not locs:
             P(f"custom product page {i}: add at least one language under locales:")
-        out["pages"].append({"id": i, "name": name, "deep_link": x.get("deep_link"),
+        deep_link = ("" if x.get("deep_link") is None else x["deep_link"]) if "deep_link" in x else None
+        out["pages"].append({"id": i, "name": name, "deep_link": deep_link,
                              "visible": x.get("visible"), "audience": x.get("audience"),
                              "locales": locs, "dir": kit / "growth" / i})
     if len(out["pages"]) > MAX_CPPS:

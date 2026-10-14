@@ -1,0 +1,21 @@
+# Copy to KIT/pricing.yaml. Use Apple territory codes and quote customer prices.
+# No tier IDs: plan looks up an exact appPricePoint from Apple for each manual price.
+base_territory: USA
+customer_price: "0.00"
+manual_overrides: {}  # e.g. {GBR: "0.99", JPN: "100"}; local customer currency
+
+# Optional: replaces the base price from this future date; omitted overrides inherit
+# the current manual_overrides. Set manual_overrides: {} to return them to automatic.
+# scheduled_change:
+#   start_date: "2027-01-15"
+#   customer_price: "0.99"
+#   manual_overrides: {GBR: "0.99"}
+
+territories: all                  # or [USA, GBR], or {all-except: [CHN]}
+new_territories_auto_available: true
+
+# Omit pre_order entirely to preserve existing pre-order settings.
+pre_order:
+  enabled: false
+# To enable: set enabled: true and a release_date 2–180 days from today.
+#   release_date: "2027-01-15"

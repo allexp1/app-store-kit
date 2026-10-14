@@ -297,3 +297,100 @@ def test_header_and_search_results_step_lists_the_creative_files(tmp_path, rules
     assert st.key == "version/header-and-search-results"
     assert [(f.label, f.value) for f in st.fields] == [("Header tab › Upload", "creative/en-US/universal.png"),
                                                        ("Search Results tab › Upload", "creative/en-US/search.png")]
+
+
+def test_private_values_mask_raw_and_escaped_outputs(tmp_path, capsys):
+    secrets = ['a&b<c>d"e\\f', 'Zq9', '~', 12]
+    kit = make_kit(tmp_path, private={"nested": {"values": secrets, "empty": "", "bool": False}})
+    assert cg.private_values({"values": secrets, "empty": "", "bool": True}) == [str(s) for s in secrets]
+    secret_text = " / ".join(map(str, secrets))
+    write_progress(kit, {TEXT: {"status": "done-by-owner", "live": {"Description": secret_text},
+                               "note": secret_text}})
+    cg.main([str(kit), "--check", "--no-private"])
+    stdout, stderr = capsys.readouterr()
+    outputs = [stdout, stderr, (kit / "CONNECT-GUIDE.md").read_text(), (kit / "connect-guide.html").read_text()]
+    for output in outputs:
+        secret = secrets[0]
+        for form in (str(secret), cg.html.escape(str(secret)), cg.json.dumps(str(secret))[1:-1]):
+            assert form not in output
+    # Values under 4 characters can't be scrubbed from free text; the guide says so once.
+    assert stderr.count("shorter than 4 characters") == 1
+    for secret in secrets:
+        assert cg.mask_obj(str(secret), cg.private_values({"values": secrets})) == cg.MASK
+    assert cg.mask("Zq9 12", cg.private_values({"values": secrets})) == "Zq9 12"
+    cg.main([str(kit), "--init-progress", "--no-private"])
+    progress = yaml.safe_load((kit / cg.PROGRESS_FILE).read_text())
+    assert progress["steps"][TEXT]["live"]["Description"] == " / ".join([cg.MASK] + [str(s) for s in secrets[1:]])
+
+
+def test_private_passwords_compare_exactly_and_only_phones_ignore_separators():
+    field = cg.Field("Password", None, private_key="password")
+    assert field.matches("old123456", {"password": "new123456"}) is False
+    assert field.matches("new123456", {"password": "new123456"}) is True
+    assert field.matches(" secret ", {"password": "secret"}) is False
+    phone = cg.Field("Phone", None, private_key="phone")
+    assert phone.matches("+1 (555) 123-4567", {"phone": "+15551234567"})
+    assert not phone.matches("old15551234567", {"phone": "+15551234567"})
+
+
+def test_no_data_collected_is_a_completed_answer(tmp_path, rules):
+    kit = make_kit(tmp_path)
+    for data in ({"collects": False, "data_types": []}, {"collects": False}):
+        (kit / "privacy.yaml").write_text(yaml.safe_dump(data))
+        assert cg.privacy_rows(kit) == (False, [])
+        g = cg.build(kit, None, rules)
+        field = next(f for f in all_fields(g) if f.label == "Collect data?")
+        assert not field.judgement and field.note == "Data Not Collected"
+        assert "Data Not Collected" in cg.render_md(g)
+
+
+def test_phased_release_defaults_alias_precedence_and_first_version(tmp_path, rules):
+    assert cg.phased_release({}, False) is True
+    assert cg.phased_release({"phased_release": False}, False) is False
+    assert cg.phased_release({"version": {"phased_release": False}, "phased_release": True}, False) is False
+    assert cg.phased_release({"version": {"phased_release": {"answer": True}}}, False) is True
+    assert cg.phased_release({"version": {"phased_release": True}}, True) is None
+    kit = make_kit(tmp_path)
+    md = cg.render_md(cg.build(kit, None, rules))
+    assert "not shown for a first version" in md
+    assert "Release update over 7-day" not in md
+    (kit / "facts.yaml").write_text(yaml.safe_dump({**FACTS, "first_version": False}))
+    assert "Release update over 7-day" in cg.render_md(cg.build(kit, None, rules))
+
+
+def test_first_purchase_review_uses_its_own_page(tmp_path, rules):
+    md = cg.render_md(cg.build(make_kit(tmp_path), None, rules))
+    assert "In-App Purchases › the purchase › Add for Review" in md
+    assert "first purchase is added on the app's version page" not in md
+    assert "Don't press Add for Review" not in md
+
+
+def test_mask_json_and_html_encodings():
+    value = 'á&<>"\\secret'
+    for encoded in (value, cg.html.escape(value), cg.json.dumps(value)[1:-1],
+                    cg.json.dumps(value, ensure_ascii=False)[1:-1],
+                    cg.html.escape(cg.json.dumps(value)[1:-1])):
+        assert cg.mask(encoded, [value]) == cg.MASK
+    assert cg.mask('true False', ['', True, False]) == 'true False'
+    assert cg.mask_obj('0', cg.private_values({'zero': 0})) == cg.MASK
+    assert cg.mask('10', cg.private_values({'zero': 0})) == '10'      # short: not a substring mask
+
+
+def test_numeric_passwords_compare_exactly_even_when_they_look_like_phones():
+    field = cg.Field("Password", None, private_key="demo_password")
+    assert field.matches("123-456", {"demo_password": "123456"}) is False
+    assert field.matches("123456", {"demo_password": "123456"}) is True
+    phone = cg.Field("Phone", None, private_key="phone")
+    assert phone.matches("123-456", {"phone": "123456"}) is True
+
+
+def test_mask_obj_masks_multiline_and_short_values_without_breaking_serialization():
+    pv = cg.private_values({"demo": {"note": "first-secret-line\nsecond-secret-line", "pin": "1", "code": 4711}})
+    data = {"schema": 1, "count": 4711, "a": "1", "text": "see first-secret-line\nsecond-secret-line ok",
+            "nested": [{"k": "first-secret-line and more"}], "id": "v1.1", True: None}
+    out = cg.mask_obj(data, pv)
+    assert out["schema"] == 1 and out["id"] == "v1.1"          # short values aren't substring-masked
+    assert out["a"] == cg.MASK and out["count"] == cg.MASK      # whole values are, any length (numbers from 4)
+    dumped = yaml.safe_dump(out) + cg.json.dumps(out)
+    assert "first-secret-line" not in dumped and "second-secret-line" not in dumped
+    assert cg.mask_obj("1", pv) == cg.MASK and cg.mask("v1.1 and 1", pv) == "v1.1 and 1"

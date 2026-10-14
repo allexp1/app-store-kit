@@ -2,7 +2,7 @@
 """Bump, archive, upload and wait for a new build of an iOS app.
 
 Usage:
-  release.py bump PROJECT_DIR [--version 1.1.0 | --major | --minor | --patch] [--build auto|N] [--last-build N]
+  release.py bump PROJECT_DIR [--version 1.1.0 | --major | --minor | --patch] [--build auto|N] [--last-build auto|N] [--kit KIT]
              [--dry-run]
   release.py archive PROJECT_DIR --scheme S [--xcodegen] [--out DIR] [--kit KIT] [--dry-run]
   release.py upload ARCHIVE --kit KIT --yes [--out DIR] [--project DIR] [--team-id T] [--internal-only] [--dry-run]
@@ -11,6 +11,8 @@ Usage:
 bump edits MARKETING_VERSION / CURRENT_PROJECT_VERSION in PROJECT_DIR/project.yml (XcodeGen; a text edit, the
 rest of the file is untouched) or, without project.yml, every occurrence in *.xcodeproj/project.pbxproj.
 --build auto = max(local build, --last-build) + 1 (--last-build is the highest build already uploaded).
+--last-build auto reads the most recent upload using asc_api key resolution, including during --dry-run.
+Use --kit for the key configuration and facts.yaml app.bundle_id, or pass --bundle-id explicitly.
 
 archive runs `xcodegen generate` (with --xcodegen and a project.yml), then `xcodebuild archive` for generic iOS.
 upload writes ExportOptions.plist (app-store-connect, destination upload, symbols, the build number as set) and runs
@@ -35,6 +37,8 @@ import subprocess
 import sys
 
 import yaml
+
+import asc_api
 
 KEY_MASK = "<key>"
 ALTOOL_DIRS = ["./private_keys", "~/private_keys", "~/.private_keys", "~/.appstoreconnect/private_keys"]
@@ -155,6 +159,22 @@ def replace_values(text: str, kind: str, key: str, new: str) -> tuple[str, int]:
     return _patterns(kind, key).subn(lambda m: f"{m.group('pre')}{m.group('q')}{new}{m.group('q')}", text)
 
 
+def latest_uploaded_build(kit, bundle_id):
+    """Read the most recently uploaded build using the API client's key resolution."""
+    config = asc_api.resolve_config(kit=kit)
+    client = asc_api.Client(token=asc_api.TokenSigner(config))
+    apps = client.get("/v1/apps", {"filter[bundleId]": bundle_id, "limit": 2}).get("data", [])
+    if len(apps) != 1:
+        raise ValueError("Could not find exactly one app for the bundle id; check --bundle-id or facts.yaml.")
+    builds = client.get("/v1/builds", {"filter[app]": apps[0]["id"], "sort": "-uploadedDate", "limit": 1}).get("data", [])
+    if not builds:
+        return 0
+    version = str(builds[0].get("attributes", {}).get("version", ""))
+    if not version.isdigit():
+        raise ValueError("The latest uploaded build is not an integer; pass an explicit --last-build N.")
+    return int(version)
+
+
 def cmd_bump(a) -> int:
     try:
         path, kind = project_file(pathlib.Path(a.project))
@@ -186,6 +206,31 @@ def cmd_bump(a) -> int:
     if new_v < old_v:
         print(f"error: {fmt_version(new_v)} is lower than the current {fmt_version(old_v)}", file=sys.stderr)
         return 1
+    if a.last_build == "auto":
+        facts = load_yaml(pathlib.Path(a.kit) / "facts.yaml") if a.kit else {}
+        bundle = a.bundle_id or (facts.get("app") or {}).get("bundle_id") or facts.get("bundle_id")
+        if not bundle:
+            bundles = set(read_values(text, kind, "PRODUCT_BUNDLE_IDENTIFIER"))
+            if len(bundles) == 1:
+                bundle = bundles.pop()
+        if not bundle or "$" in bundle:
+            print("error: --last-build auto needs --bundle-id, facts.yaml app.bundle_id, or one project bundle id.", file=sys.stderr)
+            return 2
+        try:
+            a.last_build = latest_uploaded_build(a.kit, bundle)
+        except asc_api.ConfigError:
+            print("error: no usable App Store Connect API key configured. Configure the key as for asc_api, "
+                  "or pass --last-build N from App Store Connect; nothing changed.", file=sys.stderr)
+            return 2
+        except (asc_api.ASCError, ValueError):
+            print("error: could not read the latest uploaded build. Check the app and API access, "
+                  "or pass --last-build N (an integer); nothing changed.", file=sys.stderr)
+            return 2
+    elif a.last_build is not None:
+        if not str(a.last_build).isdigit():
+            print("error: --last-build must be auto or a non-negative integer", file=sys.stderr)
+            return 2
+        a.last_build = int(a.last_build)
     floor = max(old_b, a.last_build or 0)
     if a.build in (None, "auto"):
         new_b = floor + 1
@@ -349,7 +394,9 @@ def main(argv=None) -> int:
     g.add_argument("--minor", action="store_true")
     g.add_argument("--patch", action="store_true")
     b.add_argument("--build", default="auto")
-    b.add_argument("--last-build", type=int, help="highest build number already uploaded")
+    b.add_argument("--last-build", help="highest uploaded build number, or auto to read the latest upload")
+    b.add_argument("--kit")
+    b.add_argument("--bundle-id", help="app bundle id for --last-build auto")
     b.add_argument("--dry-run", action="store_true")
 
     r = sub.add_parser("archive")

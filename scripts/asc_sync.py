@@ -9,13 +9,28 @@ Usage:
   asc_sync.py apply   KIT --yes [--only AREAS] [--dry-run]
                                                execute connect-plan.json in a safe order, re-read every change,
                                                write KIT/connect-assets.json and update KIT/connect-progress.yaml
-  asc_sync.py submit  KIT --yes [--growth IDS] [--dry-run]
-                                               reviewSubmissions: create, add the version, submit. With --growth,
-                                               also (after launch: only) those growth.yaml items
+  asc_sync.py submit  KIT --yes [--growth IDS] [--iap PRODUCT_IDS] [--include-draft-items] [--auto-release-ok]
+                    [--dry-run]                reviewSubmissions: the draft (or a new one), the version, submit. With
+                                               --growth, also (after launch: only) those growth.yaml items. With
+                                               --iap (after launch, never the app's first purchase), only those
+                                               in-app purchase versions. Refuses when the draft holds anything else
+                                               (unless --include-draft-items) and when any app version going to
+                                               App Review releases itself once approved (unless --auto-release-ok,
+                                               after asking the owner)
   asc_sync.py release KIT --start-test ID --yes
                                                start an approved product page optimization test
-  asc_sync.py release KIT --yes [--pause | --resume] [--dry-run]
-                                               release a PENDING_DEVELOPER_RELEASE version, or pause/resume phased release
+  asc_sync.py release KIT --cpp-visibility ID=on|off --yes
+                                               show or hide a custom product page by its growth.yaml id (apply
+                                               never does)
+  asc_sync.py release KIT --yes [--pause | --resume | --all] [--dry-run]
+                                               release a PENDING_DEVELOPER_RELEASE version, pause/resume a phased
+                                               release, or complete it (--all: everyone now)
+
+apply runs only an approved, unused plan without errors: it refuses when a planned file, the app, the version (its
+id, version string or state), a purchase's live price or the live media the plan replaces changed since `plan` (run
+plan again), and marks the plan used once it ran. In-app purchase prices are set from Apple's price points (iap
+area); a price with no exact point is a warning and stays as it is.
+plan --reupload-unverified replaces live files that match only by size (no recorded checksum).
 
 AREAS (comma list for --only): text, media, iap, review, age, accessibility, build, release, growth.
 growth reads KIT/growth.yaml (growth.py): custom product pages, product page optimization tests, in-app events;
@@ -109,6 +124,9 @@ RELEASE_WORDS = {"MANUAL": cg.RELEASE["manual"], "AFTER_APPROVAL": cg.RELEASE["a
                  "SCHEDULED": cg.RELEASE["scheduled"]}
 IAP_TYPE = {"non-consumable": "NON_CONSUMABLE", "consumable": "CONSUMABLE",
             "non-renewing subscription": "NON_RENEWING_SUBSCRIPTION"}
+# A kit price "2.99 USD" is set in the territory of that currency (or iap[].price_territory, three letters).
+PRICE_TERRITORY = {"USD": "USA", "GBP": "GBR", "JPY": "JPN", "CAD": "CAN", "AUD": "AUS", "CHF": "CHE",
+                   "CNY": "CHN", "INR": "IND", "BRL": "BRA", "MXN": "MEX", "KRW": "KOR", "SEK": "SWE"}
 IAP_EDITABLE = {"PREPARE_FOR_SUBMISSION", "REJECTED", "DEVELOPER_ACTION_NEEDED", "MISSING_METADATA",
                 "READY_TO_SUBMIT"}
 CONTENT_RIGHTS = {"uses_third_party": "USES_THIRD_PARTY_CONTENT", "none": "DOES_NOT_USE_THIRD_PARTY_CONTENT"}
@@ -193,6 +211,9 @@ class Kit:
 
     def mask(self, text):
         return cg.mask(text, self.pvals)
+
+    def mask_obj(self, value):
+        return cg.mask_obj(value, self.pvals)
 
 
 def load_json(p, default=None):
@@ -423,9 +444,48 @@ def read_live(client, kit, areas):
     return live
 
 
+def iap_price_want(f):
+    """(amount, territory, None) for a facts.yaml iap[] price such as "2.99 USD", or (None, None, why not)."""
+    raw = str(f.get("price") or "").strip()
+    if not raw:
+        return None, None, None
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([A-Za-z]{3})?", raw)
+    if not m:
+        return None, None, f"price {raw!r} isn't an amount with a currency, like \"2.99 USD\""
+    terr = str(f.get("price_territory") or PRICE_TERRITORY.get((m.group(2) or "").upper()) or "").upper()
+    if not re.fullmatch(r"[A-Z]{3}", terr):
+        return None, None, (f"price {raw}: say which territory it is in (iap[].price_territory, e.g. FRA for a euro "
+                            f"price; three letters)")
+    return m.group(1), terr, None
+
+
+def same_amount(a, b):
+    try:
+        return abs(float(a) - float(b)) < 0.001
+    except (TypeError, ValueError):
+        return False
+
+
+def iap_live_price(client, iid, territory):
+    """(customerPrice, price point id) of the purchase's current manual price in territory, or (None, None)."""
+    try:
+        doc = client.get(f"/v1/inAppPurchasePriceSchedules/{iid}/manualPrices",
+                         {"include": "inAppPurchasePricePoint", "filter[territory]": territory})
+    except ASCError:
+        return None, None
+    pts = [i for i in (doc or {}).get("included") or [] if i.get("type") == "inAppPurchasePricePoints"]
+    return (attrs(pts[0]).get("customerPrice"), pts[0].get("id")) if pts else (None, None)
+
+
+def iap_price_point(client, iid, territory, amount):
+    """Apple's price point with exactly this customer price in territory (looked up, never guessed), or None."""
+    pts = client.get_all(f"/v2/inAppPurchases/{iid}/pricePoints", {"filter[territory]": territory, "limit": 200})
+    return next((p for p in pts if same_amount(attrs(p).get("customerPrice"), amount)), None)
+
+
 def read_iap(client, app_id, pid, kit, details=True):
     out = {"iap": None, "version": None, "versions": [], "locs": {}, "image": None, "image_kind": "v2",
-           "price": None}
+           "price": None, "price_point": None, "want_point": None}
     found = client.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"filter[productId]": pid, "limit": 200})
     iap = next((x for x in found if attrs(x).get("productId") == pid), None)
     out["iap"] = iap
@@ -461,23 +521,32 @@ def read_iap(client, app_id, pid, kit, details=True):
                 raise
     if out["image_kind"] == "v1":
         out["image"] = get_one(client, f"/v2/inAppPurchases/{iid}/appStoreReviewScreenshot")
-    try:
-        doc = client.get(f"/v1/inAppPurchasePriceSchedules/{iid}/manualPrices",
-                         {"include": "inAppPurchasePricePoint", "filter[territory]": "USA"})
-        pts = [attrs(i).get("customerPrice") for i in (doc or {}).get("included") or []
-               if i.get("type") == "inAppPurchasePricePoints"]
-        out["price"] = pts[0] if pts else None
-    except ASCError:
-        out["price"] = None
+    f = next((x for x in kit.iaps() if x.get("product_id") == pid), {})
+    amount, terr, _ = iap_price_want(f)
+    out["price"], out["price_point"] = iap_live_price(client, iid, terr or "USA")
+    if amount and not same_amount(out["price"], amount):
+        try:
+            out["want_point"] = iap_price_point(client, iid, terr, amount)
+        except ASCError as e:
+            if e.status not in (400, 404):
+                raise
     return out
 
 
 # ---------------------------------------------------------------------------------------------------- plan
 class Plan:
-    def __init__(self, kit, live, areas):
+    def __init__(self, kit, live, areas, reupload_unverified=False):
         self.kit, self.live, self.areas = kit, live, areas
         self.items, self.notes, self.warnings, self.browser, self.person = [], [], [], [], []
+        self.errors = []      # the kit asks for something that can't be done: fix it, then plan again
         self.media_rows = []  # (locale, slot label, file, action)
+        self.reupload_unverified, self.unverified = reupload_unverified, []
+
+    def note_unverified(self, rows, kit):
+        for r in rows:
+            if r.get("matched_by") == UNVERIFIED:
+                f = pathlib.Path(r["file"])
+                self.unverified.append(f.relative_to(kit.path).as_posix() if f.is_absolute() else r["file"])
 
     def add(self, area, op, title, **kw):
         n = sum(1 for i in self.items if i["area"] == area) + 1
@@ -486,15 +555,23 @@ class Plan:
         return it
 
 
+def phone_like(value):
+    """Only digits, spaces and + - ( ) . (and at least one digit): a phone number, which Apple may reformat."""
+    return bool(re.fullmatch(r"[0-9 +().\-]+", value) and re.search(r"[0-9]", value))
+
+
 def diff(cur, desired, locale=None, private=None):
-    """[(field, old, new)] for every desired value that differs from cur. Private markers compare by digits."""
+    """[(field, old, new)] for every desired value that differs from cur. A private phone number compares by its
+    digits (Apple reformats it); any other private value (a password, a user name) compares exactly."""
     out = []
     for k, new in desired.items():
         old = cur.get(k)
         if isinstance(new, dict) and PRIVATE in new:
             want = _s((private or {}).get(new[PRIVATE]))
-            digits = re.sub(r"\D", "", want)
-            same = digits == re.sub(r"\D", "", _s(old)) if len(digits) >= 6 else want == _s(old)
+            if "phone" in str(new[PRIVATE]) and phone_like(want) and phone_like(_s(old)):
+                same = re.sub(r"\D", "", want) == re.sub(r"\D", "", _s(old))
+            else:
+                same = want == _s(old)
             if want and not same:
                 out.append({"locale": locale, "field": k, "old": MASK if old else "", "new": MASK})
             continue
@@ -507,7 +584,34 @@ def diff(cur, desired, locale=None, private=None):
 
 
 def clean(d):
-    return {k: v for k, v in d.items() if v is not None and v != ""}
+    """Drop unset values. A CLEAR value stays: it is sent as null to empty the field."""
+    return {k: None if v is CLEAR else v for k, v in d.items() if v is CLEAR or (v is not None and v != "")}
+
+
+def set_only(d):
+    """The values to send when creating: a field to clear is simply left out."""
+    return {k: v for k, v in d.items() if v is not None}
+
+
+class _Clear:
+    """The kit asks to empty an optional field: the key is there with an empty value."""
+
+    def __repr__(self):
+        return "CLEAR"
+
+
+CLEAR = _Clear()
+
+
+def pick(m, key, fallback=None, clearable=True):
+    """The kit value for key: absent → fallback (leave the field alone); present and empty ("" or null) → CLEAR
+    when the field is optional; otherwise the value."""
+    if key in (m or {}):
+        v = m[key]
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return CLEAR if clearable else fallback
+        return v
+    return fallback
 
 
 def category_id(name):
@@ -529,11 +633,14 @@ def plan_text(P):
         if not m:
             P.warnings.append(f"metadata.{loc}.yaml is missing: {loc} is left as it is")
             continue
-        desired = clean({"name": m.get("name"), "subtitle": m.get("subtitle"),
-                         "privacyPolicyUrl": m.get("privacy_policy_url") or urls.get("privacy_policy"),
-                         "privacyChoicesUrl": m.get("privacy_choices_url") or choices})
+        # Absent keys leave the live value alone; an optional key set empty clears it (sent as null, UNCONFIRMED
+        # that Apple takes null for every one of these; "" is the fallback to try).
+        desired = clean({"name": pick(m, "name", clearable=False), "subtitle": pick(m, "subtitle"),
+                         "privacyPolicyUrl": pick(m, "privacy_policy_url", urls.get("privacy_policy"),
+                                                  clearable=False),
+                         "privacyChoicesUrl": pick(m, "privacy_choices_url", choices)})
         for k, mx in LIMITS.items():
-            if k in desired and len(str(desired[k])) > mx:
+            if desired.get(k) and len(str(desired[k])) > mx:
                 P.warnings.append(f"{loc} {k} is {len(str(desired[k]))} characters (limit {mx})")
         cur = infos.get(loc)
         if cur is None:
@@ -585,13 +692,17 @@ def plan_text(P):
         m = kit.meta.get(loc)
         if not m:
             continue
-        kw = m.get("keywords")
-        desired = clean({"description": m.get("description"),
-                         "keywords": kw if isinstance(kw, str) or kw is None else ",".join(kw),
-                         "promotionalText": m.get("promotional_text"),
-                         "marketingUrl": m.get("marketing_url") or (kit.facts.get("urls") or {}).get("marketing"),
-                         "supportUrl": m.get("support_url") or (kit.facts.get("urls") or {}).get("support"),
-                         "whatsNew": None if first else m.get("whats_new")})
+        # keywords: absent leaves them alone; present and empty ("" or []) clears them (null, UNCONFIRMED as above)
+        kw = pick(m, "keywords")
+        if isinstance(kw, (list, tuple)):
+            kw = ",".join(str(k) for k in kw) if kw else CLEAR
+        urls = kit.facts.get("urls") or {}
+        desired = clean({"description": pick(m, "description", clearable=False),
+                         "keywords": kw,
+                         "promotionalText": pick(m, "promotional_text"),
+                         "marketingUrl": pick(m, "marketing_url", urls.get("marketing")),
+                         "supportUrl": pick(m, "support_url", urls.get("support"), clearable=False),
+                         "whatsNew": None if first else pick(m, "whats_new", clearable=False)})
         if not first and not m.get("whats_new"):
             P.warnings.append(f"{loc}: an update needs What's New (whats_new in metadata.{loc}.yaml)")
         if len((desired.get("keywords") or "").encode()) > 100:
@@ -611,7 +722,7 @@ def plan_version(P):
     kit, live = P.kit, P.live
     act = live.get("version_action")
     if act == "locked":
-        P.notes.append(f"Version {kit.version} is {vstate(live['target'])}: it can't be edited. For an update, "
+        P.notes.append(f"Version {kit.version} is {vstate(live['target']) or 'in an unknown state'}: it can't be edited. For an update, "
                        f"raise app.version in facts.yaml (release.py bumps it) and plan again.")
     elif act == "rename":
         P.add("version", "version_attrs", f"Rename the draft version {attrs(live['editable']).get('versionString')} "
@@ -658,7 +769,7 @@ def plan_release(P):
     if live.get("first"):
         P.notes.append("Phased release isn't offered for a first version.")
         return
-    want = truthy(kit.answer("version", "phased_release", default=True))
+    want = cg.phased_release(kit.conn, False)   # version.phased_release (top-level alias), default on
     cur = live.get("phased")
     state = attrs(cur).get("phasedReleaseState")
     if want and not cur:
@@ -694,6 +805,17 @@ def private_marker(kit, key):
     return {PRIVATE: key} if kit.private.get(key) else None
 
 
+def review_notes_want(kit):
+    """The review notes: absent (no notes file, no review_notes key) leaves the live notes alone; a notes file or
+    key that is there but empty clears them (sent as null, UNCONFIRMED that Apple takes null for notes)."""
+    meta = kit.meta.get(kit.primary, {}) or {}
+    text = cg.review_notes_text(kit.path, meta)
+    if text:
+        return text
+    there = (kit.path / (meta.get("review_notes_file") or "review-notes.md")).exists() or "review_notes" in meta
+    return CLEAR if there else None
+
+
 def plan_review(P):
     kit, live = P.kit, P.live
     if live.get("version_action") == "locked":
@@ -702,7 +824,7 @@ def plan_review(P):
     sign_in = truthy(kit.answer("sign_in_required", default=False))
     desired = clean({"contactFirstName": rc.get("first_name"), "contactLastName": rc.get("last_name"),
                      "contactEmail": rc.get("email"), "contactPhone": private_marker(kit, "phone"),
-                     "notes": cg.review_notes_text(kit.path, kit.meta.get(kit.primary, {})) or None})
+                     "notes": review_notes_want(kit)})
     desired["demoAccountRequired"] = sign_in
     if sign_in:
         desired.update(clean({"demoAccountName": private_marker(kit, "demo_user"),
@@ -797,7 +919,27 @@ def plan_accessibility(P):
                 P.notes.append(f"Accessibility ({dev}) stays a draft: Apple publishes it once a version is live.")
 
 
-def diff_slot(files, placements, live_assets, assets_map):
+UNVERIFIED = "fileSize (unverified)"
+UNKNOWN_WHY = "no recorded checksum for the live file; replaced because of --reupload-unverified"
+SIZE_WHY = "matched by size only: no recorded checksum"
+
+
+def same_file(f, sha, rec, live_attrs, reupload_unverified=False):
+    """(same, how) for a local file against a live asset: by the sha256 recorded when the kit uploaded it, else by
+    a checksum the live asset exposes (sourceFileChecksum, an MD5; UNCONFIRMED that Asset Library assets carry
+    one), else by file size, which is only a guess: such a match is kept but flagged "fileSize (unverified)", and
+    --reupload-unverified replaces it instead. A different size is always a change."""
+    if (rec or {}).get("sha256"):
+        return rec["sha256"] == sha, "sha256"
+    live_md5 = (live_attrs or {}).get("sourceFileChecksum")
+    if live_md5:
+        return str(live_md5).lower() == md5(f), "checksum"
+    if (live_attrs or {}).get("fileSize") != pathlib.Path(f).stat().st_size:
+        return False, "fileSize"
+    return (False, "unknown") if reupload_unverified else (True, UNVERIFIED)
+
+
+def diff_slot(files, placements, live_assets, assets_map, reupload_unverified=False):
     """Compare local files (in order) with the live placements of one group.
     Returns (rows, removes); a row is {pos, file, sha256, size, action, placement_id}."""
     known = (assets_map or {}).get("assets") or {}
@@ -808,16 +950,18 @@ def diff_slot(files, placements, live_assets, assets_map):
         if i < len(placements):
             p = placements[i]
             aid = placement_asset_id(p)
-            rec = known.get(aid) or {}
-            if rec.get("sha256"):
-                same, how = rec["sha256"] == sha, "sha256"
-            else:
-                same, how = (live_assets or {}).get(aid, {}).get("fileSize") == size, "fileSize"
+            same, how = same_file(f, sha, known.get(aid), (live_assets or {}).get(aid), reupload_unverified)
             row.update(action="unchanged" if same else "replace", placement_id=p["id"], asset_id=aid, matched_by=how)
+            if how in ("unknown", UNVERIFIED):
+                row["why"] = UNKNOWN_WHY if how == "unknown" else SIZE_WHY
         rows.append(row)
     for p in placements[len(files):]:
         removes.append({"placement_id": p["id"], "asset_id": placement_asset_id(p)})
     return rows, removes
+
+
+def row_action(r):
+    return r["action"] + (f" ({r['why']})" if r.get("why") else "")
 
 
 def group_placements(placements, group, ptype):
@@ -843,6 +987,7 @@ def plan_media(P):
             continue
         any_local = True
         cur_placements = (live.get("placements") or {}).get(loc) or []
+        vloc_id = version_loc_id(live, loc)
         for (ptype, cls), entries in slots.items():
             label = "+".join(dict.fromkeys(s for s, _ in entries))
             group = groups.get(cls)
@@ -850,23 +995,34 @@ def plan_media(P):
                 P.warnings.append(f"{loc} {label}: no placement group for {cls} in appAssetLibraryRefData; skipped")
                 continue
             files = [f for _, f in entries]
-            rows, removes = diff_slot(files, group_placements(cur_placements, group, ptype), live.get("assets"),
-                                      assets_map)
+            now = group_placements(cur_placements, group, ptype)
+            rows, removes = diff_slot(files, now, live.get("assets"), assets_map, P.reupload_unverified)
+            P.note_unverified(rows, kit)
             for r in rows:
-                P.media_rows.append((loc, label, pathlib.Path(r["file"]).relative_to(kit.path).as_posix(), r["action"]))
+                P.media_rows.append((loc, label, pathlib.Path(r["file"]).relative_to(kit.path).as_posix(),
+                                     row_action(r)))
             for r in removes:
                 P.media_rows.append((loc, label, f"placement {r['placement_id']}", "remove"))
             if any(r["action"] != "unchanged" for r in rows) or removes:
                 rel = [{**r, "file": pathlib.Path(r["file"]).relative_to(kit.path).as_posix()} for r in rows]
                 P.add("media", "media_slot", f"{'Previews' if ptype == 'APP_PREVIEW' else 'Screenshots'} "
                       f"{label} ({loc})", locale=loc, slot=label, display_class=cls, group=group,
-                      placement_type=ptype, rows=rel, removes=removes, changes=[
+                      placement_type=ptype, rows=rel, removes=removes, parent_id=vloc_id,
+                      live_assets=[placement_asset_id(x) for x in now], changes=[
                           {"locale": loc, "field": label, "old": f"{len(group_placements(cur_placements, group, ptype))} live",
                            "new": ", ".join(f"{pathlib.Path(r['file']).name} {r['action']}" for r in rows)
                            + (f"; remove {len(removes)}" if removes else "")}])
     if not any_local:
         P.warnings.append("no screenshots found under screenshots/<locale>/<slot>/")
     plan_creative(P, assets_map)
+
+
+def version_loc_id(live, loc):
+    """The version localization a media item will change, when it exists now (not for a version still to create:
+    Apple copies the live version's placements into the new one, so the item is checked against those)."""
+    if live.get("version_action") not in ("use", "rename"):
+        return None
+    return ((live.get("version_locs") or {}).get(loc) or {}).get("id")
 
 
 def plan_creative(P, assets_map):
@@ -885,15 +1041,18 @@ def plan_creative(P, assets_map):
                 P.warnings.append(f"{loc} {label}: no placement group for {ptype} in appAssetLibraryRefData; skipped")
                 continue
             cur = group_placements(cur_placements, group, ptype)
-            rows, removes = diff_slot([f], cur, live.get("assets"), assets_map)
+            rows, removes = diff_slot([f], cur, live.get("assets"), assets_map, P.reupload_unverified)
+            P.note_unverified(rows, kit)
             rel_file = pathlib.Path(f).relative_to(kit.path).as_posix()
-            P.media_rows.append((loc, label, rel_file, rows[0]["action"]))
+            P.media_rows.append((loc, label, rel_file, row_action(rows[0])))
             for r in removes:
                 P.media_rows.append((loc, label, f"placement {r['placement_id']}", "remove"))
             if rows[0]["action"] != "unchanged" or removes:
                 P.add("media", "media_slot", f"{label} asset ({loc})", locale=loc, slot=label.lower(),
                       display_class="DEFAULT", group=group, placement_type=ptype, category="CREATIVE_ASSETS",
-                      rows=[{**rows[0], "file": rel_file}], removes=removes, changes=[
+                      rows=[{**rows[0], "file": rel_file}], removes=removes,
+                      parent_id=version_loc_id(live, loc), live_assets=[placement_asset_id(x) for x in cur],
+                      changes=[
                           {"locale": loc, "field": label, "old": f"{len(cur)} live",
                            "new": f"{pathlib.Path(f).name} {rows[0]['action']}"}])
 
@@ -1034,14 +1193,15 @@ def slot_items(P, base, loc, singles, cur, assets_map, owner):
             P.warnings.append(f"{owner} {loc} {label}: no placement group for {cls}; skipped")
             continue
         now = group_placements(placements, group, ptype)
-        rows, removes = diff_slot([f for _, f in entries], now, live_assets, assets_map)
+        rows, removes = diff_slot([f for _, f in entries], now, live_assets, assets_map, P.reupload_unverified)
+        P.note_unverified(rows, kit)
         rel = [{**r, "file": pathlib.Path(r["file"]).relative_to(kit.path).as_posix()} for r in rows]
         for r in rel:
-            P.media_rows.append((loc, f"{owner} {label}", r["file"], r["action"]))
+            P.media_rows.append((loc, f"{owner} {label}", r["file"], row_action(r)))
         if any(r["action"] != "unchanged" for r in rows) or removes:
             out.append({"title": f"{owner}: {'previews' if ptype == 'APP_PREVIEW' else 'screenshots'} {label} ({loc})",
                         "locale": loc, "slot": label, "group": group, "placement_type": ptype, "rows": rel,
-                        "removes": removes, "changes": [{"locale": loc, "field": label, "old": f"{len(now)} live",
+                        "removes": removes, "live_assets": [placement_asset_id(x) for x in now], "changes": [{"locale": loc, "field": label, "old": f"{len(now)} live",
                                                          "new": ", ".join(f"{pathlib.Path(r['file']).name} {r['action']}"
                                                                           for r in rows)}]})
     for ptype, f in singles.items():
@@ -1050,13 +1210,15 @@ def slot_items(P, base, loc, singles, cur, assets_map, owner):
             P.warnings.append(f"{owner} {loc} {label}: no placement group for {ptype}; skipped")
             continue
         now = group_placements(placements, info["group"], ptype)
-        rows, removes = diff_slot([f], now, live_assets, assets_map)
+        rows, removes = diff_slot([f], now, live_assets, assets_map, P.reupload_unverified)
+        P.note_unverified(rows, kit)
         rel_file = pathlib.Path(f).relative_to(kit.path).as_posix()
-        P.media_rows.append((loc, f"{owner} {label}", rel_file, rows[0]["action"]))
+        P.media_rows.append((loc, f"{owner} {label}", rel_file, row_action(rows[0])))
         if rows[0]["action"] != "unchanged" or removes:
             out.append({"title": f"{owner}: {label.lower()} ({loc})", "locale": loc, "slot": label.lower(),
                         "group": info["group"], "placement_type": ptype, "category": info["category"],
                         "rows": [{**rows[0], "file": rel_file}], "removes": removes,
+                        "live_assets": [placement_asset_id(x) for x in now],
                         "changes": [{"locale": loc, "field": label, "old": f"{len(now)} live",
                                      "new": f"{pathlib.Path(f).name} {rows[0]['action']}"}]})
     return out
@@ -1109,7 +1271,8 @@ def plan_cpp(P, G, p, assets_map):
     order = {x: i for i, x in enumerate(kit.all_locales)}   # the primary language first: it creates the page
     for loc, want in sorted(p["locales"].items(), key=lambda kv: order.get(kv[0], len(order))):
         cur = live_locs.get(loc) or {}
-        desired = clean({"promotionalText": want["promotional_text"]})
+        promo = want.get("promotional_text")  # absent: leave it; "": clear it (null sent)
+        desired = clean({"promotionalText": CLEAR if promo == "" else promo})
         ch = diff(attrs(cur.get("obj")), desired, loc)
         kw_now, kw_want = cur.get("keywords") or [], want["keywords"]
         known = (G.get("app_keywords") or {}).get(loc)
@@ -1127,22 +1290,26 @@ def plan_cpp(P, G, p, assets_map):
         singles = local_creative(kit, loc, p["dir"])
         for s in slot_items(P, p["dir"], loc, singles, cur, assets_map, owner):
             slots.append({**s, "parent_id": cur["obj"]["id"] if (cur and ver) else None})
-    want_page = {"name": p["name"]} | ({"visible": bool(p["visible"])} if p.get("visible") is not None else {})
-    page_ch = diff(attrs(page), want_page) if page else []
-    deep = p.get("deep_link")
+    # Visibility is what customers see, so apply never changes it: `release KIT --cpp-visibility ID=on|off --yes`.
+    if p.get("visible") is not None and bool(attrs(page).get("visible")) != bool(p["visible"]):
+        P.notes.append(f"{owner}: growth.yaml says visible {'on' if p['visible'] else 'off'}"
+                       + (f", App Store Connect says {'on' if attrs(page).get('visible') else 'off'}" if page else "")
+                       + ". apply doesn't change what customers see: after approval, run "
+                       f"`asc_sync.py release KIT --cpp-visibility {p['id']}={'on' if p['visible'] else 'off'} --yes` "
+                       f"with the owner's yes.")
+    deep = p.get("deep_link")          # absent/null: leave it; "": clear it
     src = ver or L.get("approved")
     deep_ch = deep is not None and _s(attrs(src).get("deepLink")) != _s(deep)
     if deep_ch:
         changes.append({"locale": None, "field": "deep link", "old": attrs(src).get("deepLink"), "new": deep})
     new_version = bool(page) and not ver and bool(locs or slots or deep_ch)
-    if not page or page_ch or locs or deep_ch or new_version:
+    if not page or locs or deep_ch or new_version:
         changes = ([{"locale": None, "field": "custom product page", "old": "", "new": f"create {p['name']}"}]
-                   if not page else []) + page_ch + \
+                   if not page else []) + \
                   ([{"locale": None, "field": "version", "old": "approved", "new": "new version"}] if new_version else []) \
                   + changes
         P.add("growth", "cpp", f"{owner}", growth_id=p["id"], name=p["name"], page_id=(page or {}).get("id"),
-              version_id=(ver or {}).get("id"), deep_link=deep if deep_ch or not page else None,
-              page_attrs={c["field"]: want_page[c["field"]] for c in page_ch}, locs=locs,
+              version_id=(ver or {}).get("id"), deep_link=deep if deep_ch or not page else None, locs=locs,
               template_version_id=(live.get("live_version") or {}).get("id"), changes=changes)
     for s in slots:
         P.add("growth", "growth_slot", s.pop("title"), growth_id=p["id"], parent="cpp", owner=p["id"], **s)
@@ -1240,8 +1407,14 @@ def growth_loc(ctx, parent, owner, locale):
 
 
 def op_cpp(ctx, it):
+    """A custom product page's draft: create the page (or a new version of an approved one), its texts, keywords
+    and deep link. Never the page's visibility: that is `release --cpp-visibility` (customers see it)."""
     c, dry = ctx.client, ctx.client.dry_run
     pid, vid = it.get("page_id"), it.get("version_id")
+    deep, deep_sent = it.get("deep_link"), False
+    if not pid and not dry:   # made since the plan (an earlier, partly failed apply): use it
+        pid = next((x["id"] for x in c.get_all(f"/v1/apps/{ctx.app_id}/appCustomProductPages", {"limit": 200})
+                    if attrs(x).get("name") == it["name"]), None)
     if not pid:
         first = it["locs"][0] if it["locs"] else {"locale": ctx.kit.primary, "desired": {}}
         rels = {"app": ref("apps", ctx.app_id),
@@ -1255,10 +1428,9 @@ def op_cpp(ctx, it):
              "relationships": {"appCustomProductPageLocalizations": {"data": [
                  ref("appCustomProductPageLocalizations", "${new-loc}")]}}},
             {"type": "appCustomProductPageLocalizations", "id": "${new-loc}",
-             "attributes": {"locale": first["locale"], **first["desired"]}}]
+             "attributes": {"locale": first["locale"], **set_only(first["desired"])}}]
         pid = c.post("/v1/appCustomProductPages", doc)["data"]["id"]
-    elif it.get("page_attrs"):
-        c.patch(f"/v1/appCustomProductPages/{pid}", body("appCustomProductPages", it["page_attrs"], id=pid))
+        deep_sent = True                      # sent inline, or nothing to clear on a new page
     if not vid:
         vers = [] if dry else c.get_all(f"/v1/appCustomProductPages/{pid}/appCustomProductPageVersions", {"limit": 50})
         v = next((x for x in vers if attrs(x).get("state") in CPP_EDITABLE), None)
@@ -1266,11 +1438,13 @@ def op_cpp(ctx, it):
             vid = v["id"]
         else:  # an approved page changes through a new version (its URL stays the same)
             vid = c.post("/v1/appCustomProductPageVersions", body(
-                "appCustomProductPageVersions", clean({"deepLink": it.get("deep_link")}) or None,
+                "appCustomProductPageVersions", clean({"deepLink": deep}) or None,
                 relationships={"appCustomProductPage": ref("appCustomProductPages", pid)}))["data"]["id"]
-    elif it.get("deep_link"):
+            deep_sent = bool(deep)            # an empty one may have been copied from the approved version
+    if deep is not None and not deep_sent:
+        # "" clears the deep link: sent as null (UNCONFIRMED that Apple takes null here; "" is the fallback).
         c.patch(f"/v1/appCustomProductPageVersions/{vid}", body("appCustomProductPageVersions",
-                                                                {"deepLink": it["deep_link"]}, id=vid))
+                                                                {"deepLink": deep or None}, id=vid))
     live = {} if dry else {attrs(x).get("locale"): x for x in c.get_all(
         f"/v1/appCustomProductPageVersions/{vid}/appCustomProductPageLocalizations", {"limit": 200})}
     for loc, x in live.items():
@@ -1286,7 +1460,7 @@ def op_cpp(ctx, it):
             lid = "DRYRUN-loc"
         else:
             lid = c.post("/v1/appCustomProductPageLocalizations", body(
-                "appCustomProductPageLocalizations", {"locale": L["locale"], **L["desired"]},
+                "appCustomProductPageLocalizations", {"locale": L["locale"], **set_only(L["desired"])},
                 relationships={"appCustomProductPageVersion": ref("appCustomProductPageVersions", vid)}))["data"]["id"]
         ctx.growth_locs[("cpp", it["growth_id"], L["locale"])] = lid
         verify(ctx, f"/v1/appCustomProductPageLocalizations/{lid}", L["desired"])
@@ -1298,9 +1472,18 @@ def op_cpp(ctx, it):
     ctx.record(f"growth/{it['growth_id']}", {"Name": it["name"]}, note="Custom product page saved (not submitted)")
 
 
+def existing(ctx, path, match, params=None):
+    """The first resource at path for which match(attributes) is true, or None. Creates call it first, so an apply
+    after a partial failure (or a re-plan of one) finds what the earlier run made instead of making it twice."""
+    if ctx.client.dry_run or "DRYRUN" in path:
+        return None
+    return next((x for x in ctx.client.get_all(path, {"limit": 200, **(params or {})}) if match(attrs(x))), None)
+
+
 def op_test(ctx, it):
     c = ctx.client
-    eid = it.get("test_id")
+    eid = it.get("test_id") or (existing(ctx, f"/v1/apps/{ctx.app_id}/appStoreVersionExperimentsV2",
+                                         lambda a: a.get("name") == it["attributes"]["name"]) or {}).get("id")
     if not eid:
         eid = c.post("/v2/appStoreVersionExperiments", body("appStoreVersionExperiments", {
             **it["attributes"], "platform": "IOS"}, relationships={"app": ref("apps", ctx.app_id)}))["data"]["id"]
@@ -1308,7 +1491,9 @@ def op_test(ctx, it):
         c.patch(f"/v2/appStoreVersionExperiments/{eid}", body("appStoreVersionExperiments", it["attributes"], id=eid))
     verify(ctx, f"/v2/appStoreVersionExperiments/{eid}", it["attributes"])
     for tr in it["treatments"]:
-        tid = tr.get("target_id")
+        tid = tr.get("target_id") or (existing(
+            ctx, f"/v2/appStoreVersionExperiments/{eid}/appStoreVersionExperimentTreatments",
+            lambda a: a.get("name") == tr["attributes"].get("name")) or {}).get("id")
         if tid:
             c.patch(f"/v1/appStoreVersionExperimentTreatments/{tid}",
                     body("appStoreVersionExperimentTreatments", tr["attributes"], id=tid))
@@ -1317,6 +1502,11 @@ def op_test(ctx, it):
                 "appStoreVersionExperimentTreatments", tr["attributes"],
                 relationships={"appStoreVersionExperimentV2": ref("appStoreVersionExperiments", eid)}))["data"]["id"]
         for loc in tr["locales"]:
+            have = existing(ctx, f"/v1/appStoreVersionExperimentTreatments/{tid}/"
+                                 f"appStoreVersionExperimentTreatmentLocalizations", lambda a: a.get("locale") == loc)
+            if have:
+                ctx.growth_locs[("treatment", f"{it['growth_id']}/{tr['id']}", loc)] = have["id"]
+                continue
             lid = c.post("/v1/appStoreVersionExperimentTreatmentLocalizations", body(
                 "appStoreVersionExperimentTreatmentLocalizations", {"locale": loc},
                 relationships={"appStoreVersionExperimentTreatment": ref("appStoreVersionExperimentTreatments", tid)})
@@ -1329,7 +1519,9 @@ def op_test(ctx, it):
 
 def op_event(ctx, it):
     c = ctx.client
-    eid = it.get("event_id")
+    eid = it.get("event_id") or (existing(ctx, f"/v1/apps/{ctx.app_id}/appEvents",
+                                          lambda a: a.get("referenceName") == it["attributes"].get("referenceName"))
+                                 or {}).get("id")
     if not eid:
         eid = c.post("/v1/appEvents", body("appEvents", it["attributes"],
                                            relationships={"app": ref("apps", ctx.app_id)}))["data"]["id"]
@@ -1337,12 +1529,13 @@ def op_event(ctx, it):
         c.patch(f"/v1/appEvents/{eid}", body("appEvents", it["attributes"], id=eid))
     verify(ctx, f"/v1/appEvents/{eid}", {k: v for k, v in it["attributes"].items() if k != "territorySchedules"})
     for L in it["locs"]:
-        lid = L.get("target_id")
+        lid = L.get("target_id") or (existing(ctx, f"/v1/appEvents/{eid}/localizations",
+                                              lambda a: a.get("locale") == L["locale"]) or {}).get("id")
         if lid:
             c.patch(f"/v1/appEventLocalizations/{lid}", body("appEventLocalizations", L["desired"], id=lid))
         else:
             lid = c.post("/v1/appEventLocalizations", body(
-                "appEventLocalizations", {"locale": L["locale"], **L["desired"]},
+                "appEventLocalizations", {"locale": L["locale"], **set_only(L["desired"])},
                 relationships={"appEvent": ref("appEvents", eid)}))["data"]["id"]
         ctx.growth_locs[("event", it["growth_id"], L["locale"])] = lid
         verify(ctx, f"/v1/appEventLocalizations/{lid}", L["desired"])
@@ -1386,7 +1579,12 @@ def plan_iap(P):
               "locs": [], "image": None}
         changes = []
         if not iap:
-            typ = IAP_TYPE.get(str(f.get("type", "")).lower())
+            typ = IAP_TYPE.get(str(f.get("type", "")).strip().lower())
+            if not typ:
+                P.errors.append(f"{pid}: type {f.get('type')!r} can't be created as an in-app purchase (use "
+                                f"Consumable, Non-Consumable or Non-Renewing Subscription; auto-renewable "
+                                f"subscriptions are made with subscriptions.py)")
+                continue
             it["create_iap"] = clean({"name": f.get("reference_name") or name, "productId": pid,
                                       "inAppPurchaseType": typ, "familySharable": bool(f.get("family_shareable"))})
             changes.append({"locale": None, "field": "in-app purchase", "old": "", "new": f"create {pid}"})
@@ -1413,26 +1611,37 @@ def plan_iap(P):
             img = L.get("image")
             sha, size = sha256(rf), rf.stat().st_size
             rec = ((assets_map.get("assets") or {}).get((img or {}).get("id")) or {})
+            how = None
             if not img:
                 action = "add"
-            elif rec.get("sha256"):
-                action = "unchanged" if rec["sha256"] == sha else "replace"
             else:
-                action = "unchanged" if attrs(img).get("fileSize") == size else "replace"
+                same, how = same_file(rf, sha, rec, attrs(img), P.reupload_unverified)
+                action = "unchanged" if same else "replace"
+                if how == UNVERIFIED:
+                    P.unverified.append(rf.relative_to(kit.path).as_posix())
             if action != "unchanged":
                 it["image"] = {"file": rf.relative_to(kit.path).as_posix(), "sha256": sha, "size": size,
                                "action": action, "old_id": (img or {}).get("id")}
                 changes.append({"locale": None, "field": "review screenshot", "old": attrs(img).get("fileName"),
-                                "new": f"{rf.name} ({action})"})
+                                "new": f"{rf.name} ({action}" + (f": {UNKNOWN_WHY})" if how == "unknown" else ")")})
         else:
             P.warnings.append(f"{pid}: no review screenshot found (connect.yaml iap[].review_screenshot or iap/)")
-        want_price = re.search(r"\d+(?:\.\d+)?", str(f.get("price") or ""))
-        if want_price and L.get("price") is not None:
-            if abs(float(L["price"]) - float(want_price.group())) > 0.001:
-                P.notes.append(f"{pid} price: App Store Connect says {L['price']}, the kit says {f.get('price')}. "
-                               f"Prices are not changed by this tool; fix it in the browser if the kit is right.")
-        elif want_price and iap:
-            P.notes.append(f"{pid} price couldn't be read through the API: check it shows {f.get('price')}.")
+        amount, terr, why = iap_price_want(f)
+        if why:
+            P.warnings.append(f"{pid}: {why}; the price is left as it is")
+        elif amount and not same_amount(L.get("price"), amount):
+            pt = L.get("want_point")
+            if iap and not pt:
+                P.warnings.append(f"{pid}: Apple has no price point of exactly {amount} in {terr}; prices are fixed "
+                                  f"tiers, so pick one App Store Connect offers. The price is left as it is.")
+            else:
+                it["price"] = {"territory": terr, "customer_price": amount, "point_id": (pt or {}).get("id"),
+                               "old": L.get("price"), "old_point": L.get("price_point")}
+                changes.append({"locale": None, "field": f"price ({terr})", "old": L.get("price"),
+                                "new": f"{amount} ({f.get('price')})"})
+                P.warnings.append(f"{pid}: the new price schedule replaces the purchase's manual prices; other "
+                                  f"territories follow Apple's equalization of the {terr} price. A raised price "
+                                  f"can't be taken back for customers who already saw it.")
         if changes:
             P.add("iap", "iap", f"In-app purchase {name}", changes=changes, **it)
 
@@ -1481,8 +1690,8 @@ def version_page_url(app):
     return f"https://appstoreconnect.apple.com/apps/{aid}/distribution/ios/version/inflight"
 
 
-def build_plan(kit, live, areas):
-    P = Plan(kit, live, areas)
+def build_plan(kit, live, areas, reupload_unverified=False):
+    P = Plan(kit, live, areas, reupload_unverified)
     P.warnings += live.get("warnings") or []
     for u in kit.unknown_locales:
         P.warnings.append(f"--locale {u} isn't in the kit's locales ({', '.join(kit.all_locales)})")
@@ -1491,11 +1700,19 @@ def build_plan(kit, live, areas):
         person_and_browser_steps(P)
         return P
     plan_version(P)
+    rt = auto_release(kit, live)
+    if rt and live.get("version_action") != "locked":
+        P.notes.append(f"Release option: {AUTO_RELEASE_NOTE.format(rt=rt)}. Submit refuses until the owner says "
+                       f"that's OK (`submit --auto-release-ok`), or set connect.yaml › version.release to manual.")
     for area, fn in (("text", plan_text), ("age", plan_age), ("build", plan_build), ("release", plan_release),
                      ("review", plan_review), ("accessibility", plan_accessibility), ("iap", plan_iap),
                      ("media", plan_media), ("growth", plan_growth)):
         if area in areas:
             fn(P)
+    if P.unverified:
+        P.warnings.append(f"matched by size only: {len(P.unverified)} live file(s) have no recorded checksum and the "
+                          f"same size as the kit's file, so they are kept as they are ({', '.join(P.unverified)}). "
+                          f"If any of them changed, plan again with --reupload-unverified to replace them.")
     person_and_browser_steps(P)
     return P
 
@@ -1514,8 +1731,47 @@ def plan_json(P):
                     "live_version": attrs(live.get("live_version")).get("versionString")},
         "areas": sorted(P.areas),
         "items": sorted(P.items, key=lambda i: ORDER.index(i["area"])),
-        "notes": P.notes, "warnings": P.warnings, "browser_steps": P.browser, "person_steps": P.person,
+        "notes": P.notes, "warnings": P.warnings, "errors": P.errors,
+        "browser_steps": P.browser, "person_steps": P.person,
+        "auto_release": auto_release(kit, live),
+        "fingerprint": fingerprint(kit, live, P.items),
     }
+
+
+def fingerprint(kit, live, items):
+    """What the owner's yes covers: the app, the version, every local file the plan uploads (sha256) and every
+    live id it replaces or deletes. apply re-checks all of it and refuses when anything moved."""
+    files, replaces = {}, []
+    for it in items:
+        for r in it.get("rows") or []:
+            if r["action"] in ("add", "replace"):
+                files[r["file"]] = r["sha256"]
+            if r["action"] == "replace":
+                replaces.append({"what": "placement", "id": r["placement_id"]})
+        replaces += [{"what": "placement", "id": r["placement_id"]} for r in it.get("removes") or []]
+        img = it.get("image")
+        if img:
+            files[img["file"]] = img["sha256"]
+            if img.get("old_id"):
+                replaces.append({"what": "in-app purchase review screenshot", "id": img["old_id"]})
+        if it["op"] == "phased_release" and it.get("action") == "delete":
+            replaces.append({"what": "phased release", "id": it["target_id"]})
+    src = live.get("source") if live.get("version_action") in ("use", "rename") else None
+    return {"app_id": (live.get("app") or {}).get("id"), "bundle_id": kit.bundle_id, "version": kit.version,
+            "version_id": (src or {}).get("id"), "version_string": attrs(src).get("versionString") if src else None,
+            "version_state": vstate(src) or None if src else None,
+            "files": files, "replaces": replaces}
+
+
+AUTO_RELEASE = {"AFTER_APPROVAL", "SCHEDULED"}
+AUTO_RELEASE_NOTE = ("approval will release the app automatically ({rt}): App Review's approval puts it on the "
+                     "App Store without another yes")
+
+
+def auto_release(kit, live):
+    """The release type that would put the version on sale by itself, or None (MANUAL or unknown)."""
+    rt = release_type(kit) or attrs(live.get("target") or live.get("editable")).get("releaseType")
+    return rt if rt in AUTO_RELEASE else None
 
 
 def short(v, n=70):
@@ -1564,8 +1820,9 @@ def render_plan_md(pj, media_rows):
             if it.get("publish"):
                 L.append(f"| {it['title']} | - | publish | - | Yes |")
         L.append("")
-    for title, key in (("Notes", "notes"), ("Warnings", "warnings")):
-        if pj[key]:
+    for title, key in (("Errors (fix the kit and plan again; apply refuses this plan)", "errors"), ("Notes", "notes"),
+                       ("Warnings", "warnings")):
+        if pj.get(key):
             L += [f"## {title}", ""] + [f"- {n}" for n in pj[key]] + [""]
     for title, key, who in (("Browser steps (Claude in Chrome; the API can't do these)", "browser_steps", ""),
                             ("Person steps (only you can do these)", "person_steps", "")):
@@ -1674,6 +1931,14 @@ def verify(ctx, path, desired):
 
 
 def op_create_version(ctx, it):
+    vs = it["attributes"]["versionString"]
+    have = existing(ctx, f"/v1/apps/{ctx.app_id}/appStoreVersions", lambda a: a.get("versionString") == vs,
+                    {"filter[platform]": "IOS"})
+    if have:
+        if vstate(have) not in EDITABLE:
+            raise SyncError(f"version {vs} exists and is {vstate(have)}: run plan again")
+        ctx.version_id, ctx._vlocs = have["id"], None
+        return
     r = ctx.client.post("/v1/appStoreVersions", body("appStoreVersions", it["attributes"],
                                                      relationships={"app": ref("apps", ctx.app_id)}))
     ctx.version_id = r["data"]["id"]
@@ -1703,12 +1968,13 @@ def op_version_build(ctx, it):
 
 
 def op_appinfo_loc(ctx, it):
-    if it.get("target_id"):
-        lid = it["target_id"]
+    lid = it.get("target_id") or (existing(ctx, f"/v1/appInfos/{ctx.app_info_id}/appInfoLocalizations",
+                                           lambda a: a.get("locale") == it["locale"]) or {}).get("id")
+    if lid:
         ctx.client.patch(f"/v1/appInfoLocalizations/{lid}", body("appInfoLocalizations", it["attributes"], id=lid))
     else:
         r = ctx.client.post("/v1/appInfoLocalizations", body(
-            "appInfoLocalizations", {"locale": it["locale"], **it["desired"]},
+            "appInfoLocalizations", {"locale": it["locale"], **set_only(it["desired"])},
             relationships={"appInfo": ref("appInfos", ctx.app_info_id)}))
         lid = r["data"]["id"]
     got = verify(ctx, f"/v1/appInfoLocalizations/{lid}", it["attributes"])
@@ -1753,7 +2019,7 @@ def op_version_loc(ctx, it):
         ctx.client.patch(f"/v1/appStoreVersionLocalizations/{lid}", body("appStoreVersionLocalizations", a, id=lid))
     else:
         r = ctx.client.post("/v1/appStoreVersionLocalizations", body(
-            "appStoreVersionLocalizations", {"locale": it["locale"], **it["desired"]},
+            "appStoreVersionLocalizations", {"locale": it["locale"], **set_only(it["desired"])},
             relationships={"appStoreVersion": ref("appStoreVersions", ctx.need_version())}))
         lid = r["data"]["id"]
         ctx._vlocs[it["locale"]] = r["data"]
@@ -1814,6 +2080,10 @@ def op_accessibility(ctx, it):
 def op_phased_release(ctx, it):
     if it["action"] == "create":
         vid = ctx.need_version()
+        if not ctx.client.dry_run and not str(vid).startswith("DRYRUN") and \
+                get_one(ctx.client, f"/v1/appStoreVersions/{vid}/appStoreVersionPhasedRelease"):
+            ctx.record("version/phased-release-and-rating-reset", note="Phased release on (7 days)")
+            return
         ctx.client.post("/v1/appStoreVersionPhasedReleases", body(
             "appStoreVersionPhasedReleases", {"phasedReleaseState": "INACTIVE"},
             relationships={"appStoreVersion": ref("appStoreVersions", vid)}))
@@ -1871,29 +2141,43 @@ def op_media_slot(ctx, it):
 
 
 def place_slot(ctx, it, parent, parent_id):
-    """Make one placement group on one localization hold exactly the plan's files, in order: delete replaced or
-    surplus placements, upload new files to the Asset Library, place them, order the group, re-read.
+    """Make one placement group on one localization hold exactly the plan's files, in order, doing only what the
+    plan's rows say: delete the replaced and surplus placements it listed, upload its new files to the Asset
+    Library, place them, order the group, re-read. Nothing is re-diffed: when the live group isn't the one the plan
+    saw (other assets, other order), the item is refused and the plan must be made again.
     Returns the placed file names (empty when nothing changed)."""
     kit = ctx.kit
     rel_name, parent_type = PARENTS[parent]
     dry = str(parent_id).startswith("DRYRUN")
-    data, live_assets = read_placements(ctx.client, parent_id, parent_type) if not dry else ([], {})
-    current = group_placements(data, it["group"], it["placement_type"])
-    files = [kit.path / r["file"] for r in it["rows"]]
-    rows, removes = diff_slot(files, current, live_assets, ctx.assets)
-    if all(r["action"] == "unchanged" for r in rows) and not removes:
+    rows = it["rows"]
+    if dry:   # the parent is only being created in this dry run: the plan's own placement ids stand in
+        current = [r["placement_id"] for r in rows if r.get("placement_id")] + \
+            [r["placement_id"] for r in it.get("removes") or []]
+    else:
+        data, _ = read_placements(ctx.client, parent_id, parent_type)
+        now = group_placements(data, it["group"], it["placement_type"])
+        if [placement_asset_id(p) for p in now] != it.get("live_assets"):
+            raise SyncError(f"{it['slot']} ({it['locale']}) changed in App Store Connect since the plan: "
+                            f"run plan again")
+        current = [p["id"] for p in now]
+    for r in rows:
+        if r["action"] in ("add", "replace") and sha256(kit.path / r["file"]) != r["sha256"]:
+            raise SyncError(f"{r['file']} changed since the plan: run plan again")
+    if all(r["action"] == "unchanged" for r in rows) and len(current) <= len(rows):
         return []
     category = it.get("category") or "APP_SCREENSHOTS_AND_PREVIEWS"
     single = category == "CREATIVE_ASSETS"   # one placement per group (maxCount 1): uploaded once, never ordered
+    files = [kit.path / r["file"] for r in rows]
     video = it["placement_type"] == "APP_PREVIEW" or (single and files[0].suffix.lower() in VIDEO_EXT)
-    for r in removes + [r for r in rows if r["action"] == "replace"]:
-        ctx.client.delete(f"/v1/appAssetLibraryPlacements/{r['placement_id']}")
+    gone = [current[i] for i, r in enumerate(rows) if r["action"] == "replace"] + current[len(rows):]
+    for pid in gone:
+        ctx.client.delete(f"/v1/appAssetLibraryPlacements/{pid}")
     ordered = []
-    for r in rows:
+    for i, r in enumerate(rows):
         if r["action"] == "unchanged":
-            ordered.append(r["placement_id"])
+            ordered.append(current[i])
             continue
-        path = pathlib.Path(r["file"])
+        path = kit.path / r["file"]
         # A universal creative asset is uploaded once and placed as both header and search results.
         aid = ctx.creative_uploads.get(r["sha256"]) if single else None
         if not aid:
@@ -1906,8 +2190,8 @@ def place_slot(ctx, it, parent, parent_id):
                                                                 else "appAssetLibraryImages", aid),
                            rel_name: ref(parent_type, parent_id)}))
         ordered.append(p["data"]["id"])
-        ctx.assets["assets"][aid] = {"sha256": r["sha256"], "file": path.relative_to(kit.path).as_posix(),
-                                     "fileSize": r["size"], "locale": it["locale"], "group": it["group"]}
+        ctx.assets["assets"][aid] = {"sha256": r["sha256"], "file": r["file"], "fileSize": r["size"],
+                                     "locale": it["locale"], "group": it["group"]}
     names = [pathlib.Path(r["file"]).name for r in rows]
     if single or parent == "event":
         return names
@@ -1925,24 +2209,35 @@ def place_slot(ctx, it, parent, parent_id):
 
 def op_iap(ctx, it):
     kit, c = ctx.kit, ctx.client
-    iid = it.get("iap_id")
-    if it.get("create_iap"):
+    iid = it.get("iap_id") or (existing(ctx, f"/v1/apps/{ctx.app_id}/inAppPurchasesV2",
+                                        lambda a: a.get("productId") == it["product_id"],
+                                        {"filter[productId]": it["product_id"]}) or {}).get("id")
+    if not iid and it.get("create_iap"):
         r = c.post("/v2/inAppPurchases", body("inAppPurchases", it["create_iap"],
                                               relationships={"app": ref("apps", ctx.app_id)}))
         iid = r["data"]["id"]
     vid = it.get("version_id")
+    if not vid and iid and it.get("image_kind") != "v1" and (it["locs"] or it.get("image")):
+        try:
+            vid = (existing(ctx, f"/v2/inAppPurchases/{iid}/inAppPurchaseVersions",
+                            lambda a: a.get("state") in IAP_EDITABLE) or {}).get("id")
+        except ASCError as e:
+            if e.status != 404:
+                raise
     if not vid and (it["locs"] or it.get("image")):
         r = c.post("/v1/inAppPurchaseVersions", body("inAppPurchaseVersions", None,
                                                     relationships={"inAppPurchase": ref("inAppPurchases", iid)}))
         vid = r["data"]["id"]
     for loc in it["locs"]:
-        if loc.get("target_id"):
-            lid = loc["target_id"]
+        lid = loc.get("target_id") or (existing(
+            ctx, f"/v1/inAppPurchaseVersions/{vid}/inAppPurchaseLocalizations",
+            lambda a: a.get("locale") == loc["locale"]) or {}).get("id") if vid else loc.get("target_id")
+        if lid:
             c.patch(f"/v2/inAppPurchaseLocalizations/{lid}", body("inAppPurchaseLocalizations", loc["attributes"],
                                                                   id=lid))
         else:
             r = c.post("/v2/inAppPurchaseLocalizations", body(
-                "inAppPurchaseLocalizations", {"locale": loc["locale"], **loc["desired"]},
+                "inAppPurchaseLocalizations", {"locale": loc["locale"], **set_only(loc["desired"])},
                 relationships={"inAppPurchaseVersion": ref("inAppPurchaseVersions", vid)}))
             lid = r["data"]["id"]
         got = verify(ctx, f"/v2/inAppPurchaseLocalizations/{lid}", loc["attributes"])
@@ -1972,6 +2267,38 @@ def op_iap(ctx, it):
                                      "product_id": it["product_id"]}
         ctx.record(f"iap/{cg.slug(it['name'])}-image-optional-tax-category-review-information",
                    note=f"Review screenshot {path.name} uploaded")
+    if it.get("price"):
+        op_iap_price(ctx, it, iid)
+
+
+def op_iap_price(ctx, it, iid):
+    """POST /v1/inAppPurchasePriceSchedules (asc-api.md §6): base territory plus one manual price from now on, at
+    the price point Apple lists for exactly that customer price. UNCONFIRMED: the inline inAppPurchasePrices shape
+    (attributes startDate/endDate, relationships inAppPurchasePricePoint; no territory, which comes with the point)."""
+    c, pr = ctx.client, it["price"]
+    point = pr.get("point_id")
+    if not point and not c.dry_run:   # a purchase created in this run: its price points exist only now
+        found = iap_price_point(c, iid, pr["territory"], pr["customer_price"])
+        if not found:
+            raise SyncError(f"{it['product_id']}: Apple has no price point of exactly {pr['customer_price']} in "
+                            f"{pr['territory']}; nothing was priced")
+        point = found["id"]
+    c.post("/v1/inAppPurchasePriceSchedules", {
+        "data": {"type": "inAppPurchasePriceSchedules", "relationships": {
+            "inAppPurchase": {"data": ref("inAppPurchases", iid)},
+            "baseTerritory": {"data": ref("territories", pr["territory"])},
+            "manualPrices": {"data": [ref("inAppPurchasePrices", "${price-0}")]}}},
+        "included": [{"type": "inAppPurchasePrices", "id": "${price-0}", "attributes": {"startDate": None},
+                      "relationships": {"inAppPurchasePricePoint": {"data": ref(
+                          "inAppPurchasePricePoints", point or "(looked up after the purchase is created)")}}}]})
+    if c.dry_run:
+        return
+    got, _ = iap_live_price(c, iid, pr["territory"])
+    if not same_amount(got, pr["customer_price"]):
+        raise SyncError(f"re-read of {it['product_id']}'s price in {pr['territory']} shows {got}, not "
+                        f"{pr['customer_price']}")
+    ctx.record(f"iap/{cg.slug(it['name'])}-top-of-the-page", {"Price Schedule › Price": got},
+               note=f"Price {got} in {pr['territory']} set through the API")
 
 
 OPS = {"create_version": op_create_version, "version_attrs": op_version_attrs, "version_build": op_version_build,
@@ -1984,10 +2311,8 @@ OPS = {"create_version": op_create_version, "version_attrs": op_version_attrs, "
 def run_apply(ctx, only=None, log=print):
     """Execute the plan's items in a safe order. Returns the list of (item title, error)."""
     errors, failed_keys = [], set()
-    items = sorted(ctx.pj["items"], key=lambda i: (ORDER.index(i["area"]), ctx.pj["items"].index(i)))
+    items = sorted(items_to_run(ctx.pj, only), key=lambda i: (ORDER.index(i["area"]), ctx.pj["items"].index(i)))
     for it in items:
-        if only and it["area"] != "version" and it["area"] not in only:
-            continue
         before = set(ctx.progress)
         try:
             OPS[it["op"]](ctx, it)
@@ -2016,24 +2341,25 @@ def write_progress(kit, progress, when=None):
         entry["status"] = "done-by-claude"
         entry["date"] = when
         live = dict(entry.get("live") or {})
-        live.update({k: kit.mask(str(v)) for k, v in e["live"].items()})
+        live.update({k: str(v) for k, v in e["live"].items()})
         if live:
             entry["live"] = live
         note = "Set through the App Store Connect API (asc_sync.py apply), re-read and matching."
         if e["notes"]:
             note += " " + "; ".join(e["notes"]) + "."
-        entry["note"] = kit.mask(note)
+        entry["note"] = note
         steps[key] = entry
-    path.write_text(cg.PROGRESS_HEADER + kit.mask(yaml.safe_dump(prog, sort_keys=False, allow_unicode=True,
-                                                                  width=120)))
+    # Masked as data before it becomes YAML: a multi-line value would otherwise survive as a block scalar.
+    path.write_text(cg.PROGRESS_HEADER + yaml.safe_dump(kit.mask_obj(prog), sort_keys=False, allow_unicode=True,
+                                                        width=120))
 
 
 # ---------------------------------------------------------------------------------------------------- commands
 def print_recorded(client, kit, out=print):
     for r in client.recorded:
-        out(kit.mask(f"would send: {r['method']} {r['path']}" +
-                     (f" {json.dumps(r['json'], ensure_ascii=False)}" if r.get("json") else "") +
-                     (f" ({r['file']}, {r['bytes']} bytes)" if r.get("file") else "")))
+        out(kit.mask(f"would send: {r['method']} {r['path']}") +
+            (f" {json.dumps(kit.mask_obj(r['json']), ensure_ascii=False)}" if r.get("json") else "") +
+            (kit.mask(f" ({r['file']}, {r['bytes']} bytes)") if r.get("file") else ""))
 
 
 def cmd_status(client, kit, args):
@@ -2060,7 +2386,7 @@ def cmd_status(client, kit, args):
            "versions": [v(x) for x in versions], "kit_version_on_connect": v(target), "editable_version": v(editable),
            "live_version": v(live_v), "first_version": is_first(versions), "builds": [b(x) for x in builds],
            "latest_processed_build": b(processed), "rate_limit_remaining": client.rate_remaining}
-    (kit.path / LIVE_JSON).write_text(kit.mask(json.dumps(out, indent=2, ensure_ascii=False)) + "\n")
+    (kit.path / LIVE_JSON).write_text(json.dumps(kit.mask_obj(out), indent=2, ensure_ascii=False) + "\n")
     print(f"{out['app']['name']} (app id {app['id']}, {kit.bundle_id})")
     for x in out["versions"]:
         print(f"  version {x['versionString']}: {x['appVersionState']}")
@@ -2088,16 +2414,89 @@ def parse_only(s):
 def cmd_plan(client, kit, args):
     areas = parse_only(args.only)
     live = read_live(client, kit, areas)
-    P = build_plan(kit, live, areas)
+    P = build_plan(kit, live, areas, getattr(args, "reupload_unverified", False))
     pj = plan_json(P)
-    (kit.path / PLAN_JSON).write_text(kit.mask(json.dumps(pj, indent=2, ensure_ascii=False)) + "\n")
+    (kit.path / PLAN_JSON).write_text(json.dumps(kit.mask_obj(pj), indent=2, ensure_ascii=False) + "\n")
     (kit.path / PLAN_MD).write_text(kit.mask(render_plan_md(pj, P.media_rows)) + "\n")
     print(f"wrote {PLAN_JSON} and {PLAN_MD}: {len(pj['items'])} change(s), {len(pj['warnings'])} warning(s), "
           f"{sum(not s['done'] for s in pj['browser_steps'])} browser step(s), "
           f"{sum(not s['done'] for s in pj['person_steps'])} person step(s) open")
     for w in pj["warnings"]:
         print(kit.mask(f"warning: {w}"))
-    return 0 if live.get("app") else 1
+    for e in pj["errors"]:
+        print(kit.mask(f"error: {e}"))
+    return 0 if live.get("app") and not pj["errors"] else 1
+
+
+def items_to_run(pj, only):
+    return [it for it in pj["items"] if not only or it["area"] == "version" or it["area"] in only]
+
+
+def check_plan(ctx, items):
+    """Problems that make the approved plan no longer the thing to send: another app or version, a local file that
+    changed after the plan, or live media / ids the plan replaces or deletes that moved. Reads only."""
+    kit, c, pj = ctx.kit, ctx.client, ctx.pj
+    fp = pj.get("fingerprint")
+    if not fp:
+        return ["the plan has no fingerprint (an older asc_sync.py made it)"]
+    out = []
+    if fp.get("bundle_id") != kit.bundle_id or fp.get("version") != kit.version:
+        out.append(f"the plan is for {fp.get('bundle_id')} {fp.get('version')}, the kit now says "
+                   f"{kit.bundle_id} {kit.version}")
+    app = find_app(c, kit.bundle_id)
+    if not app or app["id"] != fp.get("app_id"):
+        out.append(f"the app id is {(app or {}).get('id')}, the plan was made for {fp.get('app_id')}")
+    # The version the plan edits: still there, still the same version string and state as when it was planned.
+    vid = fp.get("version_id") or (pj.get("version") or {}).get("id")
+    if vid:
+        v = get_one(c, f"/v1/appStoreVersions/{vid}")
+        was = fp.get("version_string") or (pj.get("kit_version") if (pj.get("version") or {}).get("action") == "use"
+                                           else None)
+        was_state = fp.get("version_state") or (pj.get("version") or {}).get("state")
+        if not v:
+            out.append(f"the version the plan edits ({was or vid}, id {vid}) is gone")
+        else:
+            if was and attrs(v).get("versionString") != was:
+                out.append(f"version {vid} is now {attrs(v).get('versionString')}, the plan was made for {was}")
+            if was_state and vstate(v) != was_state:
+                out.append(f"version {attrs(v).get('versionString')} is now {vstate(v) or 'in an unknown state'}, "
+                           f"the plan was made when it was {was_state}")
+    for it in items:
+        files = [r for r in it.get("rows") or [] if r["action"] in ("add", "replace")]
+        files += [it["image"]] if it.get("image") else []
+        for r in files:
+            f = kit.path / r["file"]
+            if fp.get("files", {}).get(r["file"]) != r["sha256"]:
+                out.append(f"{r['file']} isn't in the plan's fingerprint")
+            elif not f.is_file():
+                out.append(f"{r['file']} is gone")
+            elif sha256(f) != r["sha256"]:
+                out.append(f"{r['file']} changed after the plan")
+        if it["op"] in ("media_slot", "growth_slot") and it.get("parent_id"):
+            parent = PARENTS["version" if it["op"] == "media_slot" else it["parent"]][1]
+            data, _ = read_placements(c, it["parent_id"], parent)
+            now = [placement_asset_id(p) for p in group_placements(data, it["group"], it["placement_type"])]
+            if now != it.get("live_assets"):
+                out.append(f"{it['title']}: the live files changed after the plan")
+        img = it.get("image")
+        if it["op"] == "iap" and img and it.get("iap_id"):
+            if it.get("image_kind") == "v1":
+                cur = get_one(c, f"/v2/inAppPurchases/{it['iap_id']}/appStoreReviewScreenshot")
+            elif it.get("version_id"):
+                cur = get_one(c, f"/v1/inAppPurchaseVersions/{it['version_id']}/image")
+            else:
+                cur = None
+            if (cur or {}).get("id") != img.get("old_id"):
+                out.append(f"{it['title']}: the live review screenshot changed after the plan")
+        if it["op"] == "iap" and it.get("price") and it.get("iap_id"):
+            now, _ = iap_live_price(c, it["iap_id"], it["price"]["territory"])
+            if str(now) != str(it["price"].get("old")) and not same_amount(now, it["price"].get("old")):
+                out.append(f"{it['title']}: the live price changed after the plan ({it['price'].get('old')} → {now})")
+        if it["op"] == "phased_release" and it.get("action") == "delete" and ctx.version_id:
+            cur = get_one(c, f"/v1/appStoreVersions/{ctx.version_id}/appStoreVersionPhasedRelease")
+            if (cur or {}).get("id") != it["target_id"]:
+                out.append("the phased release changed after the plan")
+    return out
 
 
 def cmd_apply(client, kit, args, poll_wait=5):
@@ -2109,36 +2508,187 @@ def cmd_apply(client, kit, args, poll_wait=5):
     if not pj.get("app_id"):
         print("The plan has no app: create the app record first, then plan again.")
         return 1
+    if pj.get("errors"):
+        print("Refused: the plan has errors (see connect-plan.md › Errors). Fix the kit, plan again and show the new "
+              "plan to the owner.")
+        return 1
+    only = parse_only(args.only) if args.only else None
+    items = items_to_run(pj, only)
+    applied = pj.get("applied") or {}
+    done_areas = set(applied.get("areas") or [])
+    work = {it["area"] for it in items if it["area"] != "version"}
+    if applied and (work & done_areas or not work):
+        print(f"Refused: this plan was already applied on {applied.get('at')} "
+              f"({', '.join(sorted(done_areas)) or 'version'}). Run `asc_sync.py plan KIT` again: it picks up what "
+              f"exists now. Show the new plan to the owner before applying it.")
+        return 1
     ctx = Ctx(client, kit, pj, poll_wait=poll_wait)
-    errors = run_apply(ctx, parse_only(args.only) if args.only else None)
+    problems = check_plan(ctx, items)
+    if problems:
+        print("Refused: App Store Connect or the kit changed since the owner approved this plan. "
+              "Re-run plan (`asc_sync.py plan KIT`) and show the new one:")
+        for x in problems:
+            print(kit.mask(f"  - {x}"))
+        return 1
+    if pj.get("auto_release"):
+        print(f"note: {AUTO_RELEASE_NOTE.format(rt=pj['auto_release'])}; submit will need --auto-release-ok.")
+    errors = run_apply(ctx, only)
     if client.dry_run:
         print_recorded(client, kit)
         print(f"dry run: {len(client.recorded)} call(s) would be sent; nothing changed")
     else:
         (kit.path / ASSETS_JSON).write_text(json.dumps(ctx.assets, indent=2, ensure_ascii=False) + "\n")
         write_progress(kit, ctx.progress)
-        print(f"applied {len(pj['items']) - len(errors)} of {len(pj['items'])} item(s); "
-              f"updated {cg.PROGRESS_FILE} ({len(ctx.progress)} step(s)) and {ASSETS_JSON}")
+        # The yes covered this plan once: mark it used, so running apply again can't replay it.
+        failed = {t for t, _ in errors}
+        pj["applied"] = {"at": dt.datetime.now().isoformat(timespec="seconds"),
+                         "areas": sorted(done_areas | work),
+                         "results": (applied.get("results") or []) + [
+                             {"item": it["id"], "title": it["title"],
+                              "result": "failed" if it["title"] in failed else "done"} for it in items],
+                         "errors": [{"title": t, "error": e} for t, e in errors]}
+        path.write_text(json.dumps(kit.mask_obj(pj), indent=2, ensure_ascii=False) + "\n")
+        print(f"applied {len(items) - len(errors)} of {len(items)} item(s); "
+              f"updated {cg.PROGRESS_FILE} ({len(ctx.progress)} step(s)) and {ASSETS_JSON}; "
+              f"the plan is now used up" + ("" if not errors else ": run plan again for what failed"))
     for title, err in errors:
         print(f"error: {title}: {err}")
     return 1 if errors else 0
 
 
-def draft_item_kinds(client, submission_id):
-    """Relationship names that carry data on a draft submission's items (appStoreVersion, inAppPurchaseV2, ...).
-    UNCONFIRMED shape: items list their target as a relationship with data when included."""
-    kinds = set()
+# Relationships a reviewSubmissionItem names its target with (asc-api.md §8), asked for with include= so the target's
+# type and id come back. UNCONFIRMED which of them Apple accepts in include; on a 400 the items are read without it.
+ITEM_RELS = ("appStoreVersion", "appCustomProductPageVersion", "appEvent", "appStoreVersionExperimentV2",
+             "inAppPurchaseVersion")
+ITEM_WORDS = {"appStoreVersions": "app version", "appCustomProductPageVersions": "custom product page version",
+              "appEvents": "in-app event", "appStoreVersionExperiments": "product page optimization test",
+              "inAppPurchases": "in-app purchase", "inAppPurchaseVersions": "in-app purchase version",
+              "subscriptionVersions": "subscription version", "subscriptionGroupVersions": "subscription group version",
+              "appAssetLibraryImages": "Asset Library image", "appAssetLibraryVideos": "Asset Library video"}
+
+
+def draft_targets(client, submission_id):
+    """{(type, id): item id} for what a draft submission holds, by each item's target (type + id), not by
+    relationship name. An item whose target can't be read counts as ("unknown item", item id)."""
+    path = f"/v1/reviewSubmissions/{submission_id}/items"
     try:
-        items = client.get_all(f"/v1/reviewSubmissions/{submission_id}/items", {"limit": 50})
-    except ASCError:
-        return kinds
+        items = client.get_all(path, {"include": ",".join(ITEM_RELS), "limit": 50})
+    except ASCError as e:
+        if e.status != 400:
+            raise
+        items = client.get_all(path, {"limit": 50})
+    out = {}
     for it in items:
+        found = False
         for name, rel in (it.get("relationships") or {}).items():
-            if isinstance(rel, dict) and rel.get("data"):
-                kinds.add(name)
-        if not it.get("relationships"):
-            kinds.add("unknown")
-    return kinds
+            d = rel.get("data") if isinstance(rel, dict) else None
+            if name != "reviewSubmission" and isinstance(d, dict) and d.get("type") and d.get("id"):
+                out[(d["type"], d["id"])] = it.get("id")
+                found = True
+        if not found:
+            out[("unknown item", it.get("id"))] = it.get("id")
+    return out
+
+
+def target_words(key, versions=()):
+    typ, oid = key
+    if typ == "appStoreVersions":
+        v = next((x for x in versions if x["id"] == oid), None)
+        if v:
+            return f"app version {attrs(v).get('versionString')} ({oid})"
+    return f"{ITEM_WORDS.get(typ, typ)} {oid}"
+
+
+def iap_targets(client, iap):
+    """The (type, id) pairs a draft item can name a purchase by: the purchase itself or one of its versions."""
+    out = {("inAppPurchases", iap["id"])}
+    try:
+        out |= {("inAppPurchaseVersions", v["id"]) for v in
+                client.get_all(f"/v2/inAppPurchases/{iap['id']}/inAppPurchaseVersions", {"limit": 50})}
+    except ASCError as e:
+        if e.status != 404:
+            raise
+    return out
+
+
+def open_draft(client, app_id):
+    """The app's one draft (READY_FOR_REVIEW) submission, or None. Several drafts: SyncError."""
+    drafts = client.get_all("/v1/reviewSubmissions", {"filter[app]": app_id, "filter[platform]": "IOS",
+                                                      "filter[state]": "READY_FOR_REVIEW", "limit": 20})
+    if len(drafts) > 1:
+        raise SyncError(f"App Store Connect has {len(drafts)} draft submissions for this app "
+                        f"({', '.join(d['id'] for d in drafts)}): remove the extra ones in App Store Connect first")
+    return drafts[0] if drafts else None
+
+
+def auto_release_targets(client, keys, versions=()):
+    """Words for each app version among keys that releases itself on approval (AFTER_APPROVAL / SCHEDULED), read
+    live. An item whose target can't be read could be such a version, so it counts too."""
+    out = []
+    for typ, oid in sorted(keys, key=str):
+        if typ == "unknown item":
+            out.append(f"a draft item ({oid}) whose target can't be read (it may be an app version that releases "
+                       f"itself)")
+            continue
+        if typ != "appStoreVersions":
+            continue
+        v = next((x for x in versions if x["id"] == oid), None) or get_one(client, f"/v1/appStoreVersions/{oid}")
+        rt = attrs(v).get("releaseType")
+        if rt in AUTO_RELEASE:
+            out.append(f"{target_words((typ, oid), versions)}, set to release automatically ({rt})")
+    return out
+
+
+def submit_items(client, kit, app, want, args, allowed=frozenset(), versions=(), what="the version"):
+    """Put exactly the requested items (want: [(relationship, type, id, label)]) in the app's draft submission and
+    submit it. Refuses (exit 1) when the draft already holds anything else that isn't `allowed`, unless the owner
+    confirmed it with --include-draft-items. Adds each target once, re-reads the draft, then submits."""
+    try:
+        draft = open_draft(client, app["id"])
+    except SyncError as e:
+        print(f"Refused: {e}")
+        return 1, None
+    have = draft_targets(client, draft["id"]) if draft else {}
+    wanted = {(typ, oid) for _, typ, oid, _ in want}
+    others = [k for k in have if k not in wanted and k not in allowed]
+    if others and not args.include_draft_items:
+        print("Refused: the draft submission in App Store Connect already holds item(s) you didn't ask to submit:\n"
+              + "".join(f"  - {target_words(k, versions)}\n" for k in others)
+              + "Submitting would send them to App Review too. Remove them in App Store Connect (App Review › the "
+                "draft submission), or, if the owner wants them sent as well, run again with "
+                "--include-draft-items --yes.")
+        return 1, None
+    if not getattr(args, "auto_release_ok", False):
+        auto = auto_release_targets(client, set(have) | wanted, versions)
+        if auto:
+            print("Refused: submitting would send " + ", ".join(auto) + " to App Review: approval will release the "
+                  "app automatically, which skips the separate release yes. Ask the owner explicitly: \"Approval "
+                  "will release the app automatically. Is that OK?\" If they say yes, run again with "
+                  "--auto-release-ok --yes; otherwise set that version's release to manual first.")
+            return 1, None
+    if not args.yes and not client.dry_run:
+        print(f"Submitting sends {what} to App Review"
+              + (" together with what is already in the draft" if others else "")
+              + ": ask the owner, then run again with --yes.")
+        return 2, None
+    sid = draft["id"] if draft else client.post("/v1/reviewSubmissions", body(
+        "reviewSubmissions", {"platform": "IOS"}, relationships={"app": ref("apps", app["id"])}))["data"]["id"]
+    for rel, typ, oid, _ in want:
+        if (typ, oid) not in have:
+            client.post("/v1/reviewSubmissionItems", body("reviewSubmissionItems", None, relationships={
+                "reviewSubmission": ref("reviewSubmissions", sid), rel: ref(typ, oid)}))
+    if not client.dry_run:
+        now = draft_targets(client, sid)
+        missing = [label for _, typ, oid, label in want if (typ, oid) not in now]
+        extra = [k for k in now if k not in wanted and k not in allowed and k not in others]
+        if missing or extra:
+            print("Refused: the draft submission doesn't hold exactly what was asked for "
+                  + (f"(missing: {', '.join(missing)}) " if missing else "")
+                  + (f"(new: {', '.join(target_words(k, versions) for k in extra)}) " if extra else "")
+                  + f"; nothing was submitted (draft {sid}). Check it in App Store Connect.")
+            return 1, sid
+    client.patch(f"/v1/reviewSubmissions/{sid}", body("reviewSubmissions", {"submitted": True}, id=sid))
+    return 0, sid
 
 
 def growth_review_items(client, kit, app_id, ids, first):
@@ -2179,59 +2729,108 @@ def growth_review_items(client, kit, app_id, ids, first):
     return out
 
 
+def iap_review_items(client, kit, app_id, pids, first):
+    """[(relationship, type, id, label)] for in-app purchases (facts.yaml product ids) that are ready to go to App
+    Review on their own: never the app's first purchase (Apple takes that only from the purchase's page, together
+    with an app version), and only a version that is ready (asc-api.md §6). Raises SyncError."""
+    known = {f.get("product_id"): f for f in kit.iaps()}
+    approved = [x for x in client.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"limit": 200})
+                if attrs(x).get("state") == "APPROVED"]
+    if first or not approved:
+        raise SyncError("the app has no approved in-app purchase yet: Apple takes the first purchase only together "
+                        "with an app version, from the purchase's own page (In-App Purchases › the purchase › Add "
+                        "for Review, with a yes); `submit` then adds the version")
+    out = []
+    for pid in pids:
+        if pid not in known:
+            raise SyncError(f"{pid} isn't a product id in facts.yaml › monetization.iap")
+        L = read_iap(client, app_id, pid, kit, details=True)
+        iap = L.get("iap")
+        if not iap:
+            raise SyncError(f"{pid} doesn't exist in App Store Connect yet (plan and apply the iap area first)")
+        name = known[pid].get("display_name") or known[pid].get("reference_name") or pid
+        v = L.get("version")
+        if v:
+            if attrs(v).get("state") == "MISSING_METADATA":
+                raise SyncError(f"{pid}: its version is MISSING_METADATA: add what App Store Connect asks for first")
+            out.append(("inAppPurchaseVersion", "inAppPurchaseVersions", v["id"], f"in-app purchase {name}"))
+        elif L.get("image_kind") == "v1" and attrs(iap).get("state") in IAP_EDITABLE - {"MISSING_METADATA"}:
+            # An unversioned purchase (live 2026-10-14) is named by the purchase itself. UNCONFIRMED that a
+            # reviewSubmissionItem takes inAppPurchaseV2 for it.
+            out.append(("inAppPurchaseV2", "inAppPurchases", iap["id"], f"in-app purchase {name}"))
+        else:
+            raise SyncError(f"{pid} has nothing waiting to be submitted ({attrs(iap).get('state') or 'unknown'})")
+    return out
+
+
 def cmd_submit(client, kit, args):
     app = find_app(client, kit.bundle_id)
     if not app:
         print(f"No app with bundle id {kit.bundle_id}.")
         return 1
     versions = client.get_all(f"/v1/apps/{app['id']}/appStoreVersions", {"filter[platform]": "IOS", "limit": 200})
+    first = is_first(versions)
     extra = []
-    if args.growth:
+    if getattr(args, "iap", None):
         try:
-            extra = growth_review_items(client, kit, app["id"], [x.strip() for x in args.growth.split(",") if x.strip()],
-                                        is_first(versions))
+            extra += iap_review_items(client, kit, app["id"],
+                                      [x.strip() for x in args.iap.split(",") if x.strip()], first)
         except SyncError as e:
             print(f"Refused: {e}")
             return 1
-        if not is_first(versions):
-            return submit_growth_only(client, kit, app, extra, args)
+    if args.growth:
+        try:
+            extra += growth_review_items(client, kit, app["id"],
+                                         [x.strip() for x in args.growth.split(",") if x.strip()], first)
+        except SyncError as e:
+            print(f"Refused: {e}")
+            return 1
+    if extra and not first:
+        return submit_growth_only(client, kit, app, extra, args, versions)
     target, _, _ = pick_versions(versions, kit.version)
     if not target or vstate(target) not in EDITABLE:
         print(f"Version {kit.version} is {vstate(target) or 'missing'}: nothing to submit.")
         return 1
-    existing = client.get_all("/v1/reviewSubmissions", {"filter[app]": app["id"], "filter[platform]": "IOS",
-                                                         "filter[state]": "READY_FOR_REVIEW", "limit": 20})
-    draft_items = draft_item_kinds(client, existing[0]["id"]) if existing else set()
-    if is_first(versions) and kit.iaps():
-        pending = []
+    rt = attrs(target).get("releaseType") or release_type(kit)
+    if rt in AUTO_RELEASE and not args.auto_release_ok:
+        print(f"Refused: version {kit.version} is set to release automatically ({rt}): "
+              f"{AUTO_RELEASE_NOTE.format(rt=rt)}. That skips the separate release yes. Ask the owner explicitly: "
+              f"\"Approval will release the app automatically. Is that OK?\" If they say yes, run again with "
+              f"--auto-release-ok --yes; otherwise set connect.yaml › version.release to manual, plan and apply.")
+        return 1
+    allowed = set()
+    if first and kit.iaps():
+        try:
+            draft = open_draft(client, app["id"])
+        except SyncError as e:
+            print(f"Refused: {e}")
+            return 1
+        have = set(draft_targets(client, draft["id"])) if draft else set()
+        missing = []
         for f in kit.iaps():
-            L = read_iap(client, app["id"], f.get("product_id"), kit, details=False)
-            if attrs(L.get("iap")).get("state") != "APPROVED":
-                pending.append(f.get("product_id"))
+            iap = read_iap(client, app["id"], f.get("product_id"), kit, details=False).get("iap")
+            if iap and attrs(iap).get("state") == "APPROVED":
+                continue
+            ids = iap_targets(client, iap) if iap else set()
+            if ids & have:
+                allowed |= ids & have
+            else:
+                missing.append(f.get("product_id"))
         # The first purchase can't be added through the API. It is in the draft once the owner (or Chrome, with a
-        # yes) pressed Add for Review on the purchase's page: the draft then holds an item that isn't the version.
-        if pending and not (draft_items - {"appStoreVersion"}):
+        # yes) pressed Add for Review on the purchase's page: the draft then holds an item naming that purchase.
+        if missing:
             print("Refused: this is the app's first version and its first in-app purchase "
-                  f"({', '.join(pending)}) has never been approved. Apple takes the first purchase only in the "
-                  "same submission as the version, and only from the purchase's own page (the API can't add it). "
-                  "Open In-App Purchases › the purchase › Add for Review (a yes), then run this again:\n  "
+                  f"({', '.join(missing)}) has never been approved and isn't in the draft submission. Apple takes "
+                  "the first purchase only in the same submission as the version, and only from the purchase's own "
+                  "page (the API can't add it). Open In-App Purchases › the purchase › Add for Review (a yes), then "
+                  "run this again:\n  "
                   f"https://appstoreconnect.apple.com/apps/{app['id']}/distribution/iaps")
             return 1
-    if not args.yes and not client.dry_run:
-        print("Submitting sends the app to App Review: ask the owner, then run again with --yes.")
-        return 2
-    if existing:
-        sid = existing[0]["id"]
-    else:
-        r = client.post("/v1/reviewSubmissions", body("reviewSubmissions", {"platform": "IOS"},
-                                                      relationships={"app": ref("apps", app["id"])}))
-        sid = r["data"]["id"]
-    if "appStoreVersion" not in draft_items:
-        client.post("/v1/reviewSubmissionItems", body("reviewSubmissionItems", None, relationships={
-            "reviewSubmission": ref("reviewSubmissions", sid),
-            "appStoreVersion": ref("appStoreVersions", target["id"])}))
-    add_review_items(client, sid, extra, draft_items)
-    client.patch(f"/v1/reviewSubmissions/{sid}", body("reviewSubmissions", {"submitted": True}, id=sid))
+    want = [("appStoreVersion", "appStoreVersions", target["id"], f"version {kit.version}")] + extra
+    code, sid = submit_items(client, kit, app, want, args, frozenset(allowed), versions,
+                             what=", ".join(label for *_, label in want))
+    if code:
+        return code
     if client.dry_run:
         print_recorded(client, kit)
         return 0
@@ -2245,42 +2844,31 @@ def cmd_submit(client, kit, args):
     return 0
 
 
-def add_review_items(client, sid, items, draft_items=()):
-    for rel, typ, oid, _ in items:
-        if rel not in draft_items:
-            client.post("/v1/reviewSubmissionItems", body("reviewSubmissionItems", None, relationships={
-                "reviewSubmission": ref("reviewSubmissions", sid), rel: ref(typ, oid)}))
-
-
-def submit_growth_only(client, kit, app, items, args):
-    """After launch, custom product pages, tests and events go to App Review without a version."""
-    if not args.yes and not client.dry_run:
-        print("Submitting sends " + ", ".join(label for *_, label in items) + " to App Review: ask the owner, then "
-              "run again with --yes.")
-        return 2
-    existing = client.get_all("/v1/reviewSubmissions", {"filter[app]": app["id"], "filter[platform]": "IOS",
-                                                         "filter[state]": "READY_FOR_REVIEW", "limit": 20})
-    if existing:
-        sid = existing[0]["id"]
-        have = draft_item_kinds(client, sid)
-    else:
-        sid = client.post("/v1/reviewSubmissions", body("reviewSubmissions", {"platform": "IOS"},
-                                                        relationships={"app": ref("apps", app["id"])}))["data"]["id"]
-        have = set()
-    add_review_items(client, sid, items, have)
-    client.patch(f"/v1/reviewSubmissions/{sid}", body("reviewSubmissions", {"submitted": True}, id=sid))
+def submit_growth_only(client, kit, app, items, args, versions=()):
+    """After launch, custom product pages, tests, events and later in-app purchases go to App Review without a
+    version."""
+    code, sid = submit_items(client, kit, app, items, args, versions=versions,
+                             what=", ".join(label for *_, label in items))
+    if code:
+        return code
     if client.dry_run:
         print_recorded(client, kit)
         return 0
-    gids = [x.strip() for x in args.growth.split(",") if x.strip()]
-    write_progress(kit, {f"growth/{g}": {"live": {}, "notes": ["Submitted for review"]} for g in gids})
+    gids = [x.strip() for x in (args.growth or "").split(",") if x.strip()]
+    done = {f"growth/{g}": {"live": {}, "notes": ["Submitted for review"]} for g in gids}
+    for pid in [x.strip() for x in (getattr(args, "iap", None) or "").split(",") if x.strip()]:
+        f = next((x for x in kit.iaps() if x.get("product_id") == pid), {})
+        name = f.get("display_name") or f.get("reference_name") or pid
+        done[f"iap/{cg.slug(name)}-image-optional-tax-category-review-information"] = {
+            "live": {}, "notes": ["Submitted for review"]}
+    write_progress(kit, done)
     print("submitted " + ", ".join(label for *_, label in items) + f" for review (submission {sid})")
     return 0
 
 
 def cmd_release(client, kit, args):
-    if args.pause and args.resume:
-        print("--pause and --resume together make no sense")
+    if sum(bool(x) for x in (args.pause, args.resume, args.all, args.start_test, args.cpp_visibility)) > 1:
+        print("use one of --pause, --resume, --all, --start-test, --cpp-visibility at a time")
         return 2
     app = find_app(client, kit.bundle_id)
     if not app:
@@ -2288,8 +2876,12 @@ def cmd_release(client, kit, args):
         return 1
     if args.start_test:
         return start_test(client, kit, app, args)
+    if args.cpp_visibility:
+        return cpp_visibility(client, kit, app, args)
     versions = client.get_all(f"/v1/apps/{app['id']}/appStoreVersions", {"filter[platform]": "IOS", "limit": 200})
     target, _, live_v = pick_versions(versions, kit.version)
+    if args.all:
+        return complete_phased(client, kit, target or live_v, args)
     if args.pause or args.resume:
         v = target or live_v
         ph = get_one(client, f"/v1/appStoreVersions/{v['id']}/appStoreVersionPhasedRelease") if v else None
@@ -2324,6 +2916,80 @@ def cmd_release(client, kit, args):
         return 0
     write_progress(kit, {"release/release-this-version": {"live": {}, "notes": [f"Version {kit.version} released"]}})
     print(f"released version {kit.version}")
+    return 0
+
+
+def complete_phased(client, kit, v, args):
+    """Release to everyone now: a running (or paused) phased release goes to COMPLETE (asc-api.md §3)."""
+    ph = get_one(client, f"/v1/appStoreVersions/{v['id']}/appStoreVersionPhasedRelease") if v else None
+    state = attrs(ph).get("phasedReleaseState")
+    if not ph:
+        print(f"Version {kit.version} has no phased release: nothing to complete.")
+        return 1
+    if state == "COMPLETE":
+        print("The phased release is already complete: everyone gets the update.")
+        return 0
+    if state not in ("ACTIVE", "PAUSED"):
+        print(f"The phased release is {state}: it starts when the version is released; only a running or paused "
+              f"one can be completed.")
+        return 1
+    if not args.yes and not client.dry_run:
+        print("Completing the phased release gives the update to every user now, and it can't be undone: ask the "
+              "owner, then run again with --yes.")
+        return 2
+    client.patch(f"/v1/appStoreVersionPhasedReleases/{ph['id']}",
+                 body("appStoreVersionPhasedReleases", {"phasedReleaseState": "COMPLETE"}, id=ph["id"]))
+    if client.dry_run:
+        print_recorded(client, kit)
+        return 0
+    write_progress(kit, {"release/release-this-version": {
+        "live": {}, "notes": [f"Phased release of {kit.version} completed: released to everyone"]}})
+    print(f"phased release completed: version {kit.version} goes to everyone")
+    return 0
+
+
+def cpp_visibility(client, kit, app, args):
+    """Show or hide custom product pages (`--cpp-visibility ID=on|off`, repeatable or comma list). Customers see
+    this, so it is a release-like step with its own yes, never part of apply."""
+    pages = {x["id"]: x for x in gr.load(kit.path)["pages"]}
+    want = []
+    for part in [x.strip() for v in args.cpp_visibility for x in v.split(",") if x.strip()]:
+        gid, _, val = part.partition("=")
+        if gid not in pages or val.lower() not in ("on", "off"):
+            print(f"--cpp-visibility {part}: use ID=on or ID=off with a custom product page id from growth.yaml")
+            return 2
+        want.append((gid, val.lower() == "on"))
+    live = {attrs(x).get("name"): x for x in client.get_all(f"/v1/apps/{app['id']}/appCustomProductPages",
+                                                            {"limit": 200})}
+    todo = []
+    for gid, on in want:
+        page = live.get(pages[gid]["name"])
+        if not page:
+            print(f"{gid}: custom product page {pages[gid]['name']!r} doesn't exist in App Store Connect yet")
+            return 1
+        if bool(attrs(page).get("visible")) != on:
+            todo.append((gid, page, on))
+    if not todo:
+        print("Nothing to change: the pages already have that visibility.")
+        return 0
+    if not args.yes and not client.dry_run:
+        print("Changing what customers see: " + ", ".join(f"{pages[g]['name']} {'visible' if on else 'hidden'}"
+                                                         for g, _, on in todo)
+              + ". Ask the owner, then run again with --yes.")
+        return 2
+    for gid, page, on in todo:
+        client.patch(f"/v1/appCustomProductPages/{page['id']}",
+                     body("appCustomProductPages", {"visible": on}, id=page["id"]))
+    if client.dry_run:
+        print_recorded(client, kit)
+        return 0
+    for gid, page, on in todo:
+        if bool(attrs(get_one(client, f"/v1/appCustomProductPages/{page['id']}")).get("visible")) != on:
+            print(f"error: re-read of {pages[gid]['name']} shows another visibility")
+            return 1
+    write_progress(kit, {f"growth/{g}": {"live": {"Visible": "Yes" if on else "No"},
+                                         "notes": ["Visibility changed"]} for g, _, on in todo})
+    print("changed: " + ", ".join(f"{pages[g]['name']} {'visible' if on else 'hidden'}" for g, _, on in todo))
     return 0
 
 
@@ -2367,7 +3033,19 @@ def main(argv=None, client=None):
     ap.add_argument("--yes", action="store_true", help="the owner said yes to this exact step")
     ap.add_argument("--pause", action="store_true", help="release: pause the phased release")
     ap.add_argument("--resume", action="store_true", help="release: resume the phased release")
+    ap.add_argument("--all", action="store_true", help="release: complete a running phased release (everyone now)")
+    ap.add_argument("--cpp-visibility", action="append",
+                    help="release: ID=on|off, ID being the page's id in growth.yaml (not its name); shows or hides "
+                         "that custom product page (repeat or comma list)")
+    ap.add_argument("--include-draft-items", action="store_true",
+                    help="submit: also send what the draft submission already holds (the owner confirmed it)")
+    ap.add_argument("--auto-release-ok", action="store_true",
+                    help="submit: the owner said yes to the version releasing itself once approved")
     ap.add_argument("--growth", help="submit: comma list of growth.yaml ids (custom product pages, tests, events)")
+    ap.add_argument("--iap", help="submit: comma list of in-app purchase product ids to send to App Review (not the "
+                                  "app's first purchase)")
+    ap.add_argument("--reupload-unverified", action="store_true",
+                    help="plan: replace live files that match the kit's only by size (no recorded checksum)")
     ap.add_argument("--start-test", help="release: start this approved product page optimization test (growth id)")
     ap.add_argument("--key-id")
     ap.add_argument("--issuer-id")

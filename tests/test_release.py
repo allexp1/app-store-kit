@@ -159,3 +159,64 @@ def test_wait_dry_run(tmp_path, capsys):
 
 def test_wait_needs_app_id(tmp_path):
     assert rl.main(["wait", "--version", "1.1.0", "--build", "31", "--dry-run"]) == 2
+
+
+def fake_build_client(monkeypatch, builds, apps=None):
+    calls = []
+    config = object()
+    monkeypatch.setattr(rl.asc_api, 'resolve_config', lambda **kw: calls.append(('config', kw)) or config)
+    monkeypatch.setattr(rl.asc_api, 'TokenSigner', lambda c: config if c is config else pytest.fail('wrong config'))
+    class Client:
+        def __init__(self, token):
+            assert token is config
+        def get(self, path, params):
+            calls.append((path, params))
+            return {'data': (apps if apps is not None else [{'id': 'APP'}]) if path == '/v1/apps' else builds}
+    monkeypatch.setattr(rl.asc_api, 'Client', Client)
+    return calls
+
+
+def test_last_build_auto_reads_latest_and_uses_api_key_resolution(tmp_path, monkeypatch):
+    import yaml
+    project = yml_project(tmp_path)
+    kit = tmp_path / 'kit'
+    kit.mkdir()
+    (kit / 'facts.yaml').write_text(yaml.safe_dump({'app': {'bundle_id': 'com.example.app'}}))
+    calls = fake_build_client(monkeypatch, [{'attributes': {'version': '40'}}])
+    assert rl.main(['bump', str(project), '--last-build', 'auto', '--kit', str(kit)]) == 0
+    assert 'CURRENT_PROJECT_VERSION: "41"' in (project / 'project.yml').read_text()
+    assert calls == [('config', {'kit': str(kit)}),
+                     ('/v1/apps', {'filter[bundleId]': 'com.example.app', 'limit': 2}),
+                     ('/v1/builds', {'filter[app]': 'APP', 'sort': '-uploadedDate', 'limit': 1})]
+
+
+def test_last_build_auto_without_key_explains_manual_fallback(tmp_path, monkeypatch, capsys):
+    project = yml_project(tmp_path)
+    def no_key(**kwargs):
+        raise rl.asc_api.ConfigError('not configured')
+    monkeypatch.setattr(rl.asc_api, 'resolve_config', no_key)
+    assert rl.main(['bump', str(project), '--last-build', 'auto', '--bundle-id', 'com.example.app']) == 2
+    assert 'no usable App Store Connect API key configured' in capsys.readouterr().err
+    assert (project / 'project.yml').read_text() == PROJECT_YML
+
+
+@pytest.mark.parametrize('builds,code,new_build', [([], 0, '23'), ([{'attributes': {'version': '10'}}], 0, '23'),
+    ([{'attributes': {'version': '1.2'}}], 2, '22')])
+def test_last_build_auto_empty_older_and_noninteger(tmp_path, monkeypatch, builds, code, new_build):
+    project = yml_project(tmp_path)
+    fake_build_client(monkeypatch, builds)
+    assert rl.main(['bump', str(project), '--last-build', 'auto', '--bundle-id', 'com.example.app']) == code
+    assert f'CURRENT_PROJECT_VERSION: "{new_build}"' in (project / 'project.yml').read_text()
+
+
+def test_last_build_auto_project_bundle_dry_run_and_stale_build(tmp_path, monkeypatch):
+    project = yml_project(tmp_path)
+    path = project / 'project.yml'
+    original = PROJECT_YML.replace('    SWIFT_VERSION:', '    PRODUCT_BUNDLE_IDENTIFIER: com.example.app\n    SWIFT_VERSION:')
+    path.write_text(original)
+    calls = fake_build_client(monkeypatch, [{'attributes': {'version': '40'}}])
+    assert rl.main(['bump', str(project), '--last-build', 'auto', '--dry-run']) == 0
+    assert calls[1][1]['filter[bundleId]'] == 'com.example.app'
+    assert path.read_text() == original
+    assert rl.main(['bump', str(project), '--last-build', 'auto', '--build', '40']) == 1
+    assert path.read_text() == original

@@ -268,3 +268,59 @@ def test_validate_kit_checks_growth_images(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "growth/first-shot/motion/screenshots/en-US/iphone-di-medium" in out and "not an accepted size" in out
     assert "in-app event card (16:9" in out
+
+
+def test_cpp_null_clears_and_absent_leaves_alone(tmp_path):
+    (tmp_path / "growth.yaml").write_text(
+        "custom_product_pages:\n"
+        "  - id: a\n    name: A\n    deep_link:\n    locales:\n      en-US:\n        promotional_text:\n"
+        "  - id: b\n    name: B\n    locales:\n      en-US:\n        keywords: [storage]\n")
+    pages = {p["id"]: p for p in gr.load(tmp_path)["pages"]}
+    assert pages["a"]["deep_link"] == "" and pages["a"]["locales"]["en-US"]["promotional_text"] == ""
+    assert pages["b"]["deep_link"] is None and "promotional_text" not in pages["b"]["locales"]["en-US"]
+
+
+def test_keywords_only_locale_plans_and_leaves_promotional_text_alone(tmp_path, capsys):
+    page = {"id": "storage", "name": "Free up storage",
+            "locales": {"en-US": {"keywords": ["storage"]}}}
+    kit = growth_kit(tmp_path, {"custom_product_pages": [page]})
+    fake = FakeASC()
+    live_app(fake)
+    pj = plan(fake, kit)
+    cpp = next(i for i in pj["items"] if i["op"] == "cpp")
+    assert cpp["locs"][0]["desired"] == {} and cpp["locs"][0]["keywords_add"] == ["storage"]
+    assert cpp["deep_link"] is None
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    loc = fake.of_type("appCustomProductPageLocalizations")[0]
+    assert "promotionalText" not in loc["attributes"]
+    # A live promotional text stays when the kit doesn't mention it.
+    loc["attributes"]["promotionalText"] = "Set in App Store Connect."
+    pj = plan(fake, kit)
+    assert not any(c["field"] == "promotionalText" for i in pj["items"] for c in i.get("changes") or [])
+
+
+def test_growth_submit_after_launch_keeps_the_automatic_release_gate(tmp_path, capsys):
+    """A draft holding an app version that releases itself on approval can't ride along with a growth submission
+    (submit --growth ... --include-draft-items) without the owner's --auto-release-ok."""
+    kit = growth_kit(tmp_path, {"custom_product_pages": GROWTH["custom_product_pages"]})
+    fake = FakeASC()
+    live_app(fake)
+    plan(fake, kit)
+    run(fake, "apply", str(kit), "--yes")
+    fake.add("appStoreVersions", {"versionString": "1.1.0", "appVersionState": "PREPARE_FOR_SUBMISSION",
+                                  "platform": "IOS", "releaseType": "AFTER_APPROVAL"}, {"app": ("apps", "app1")},
+             id="ver2")
+    sub = fake.add("reviewSubmissions", {"platform": "IOS", "state": "READY_FOR_REVIEW"}, {"app": ("apps", "app1")},
+                   id="sub1")
+    fake.add("reviewSubmissionItems", {"state": "READY_FOR_REVIEW"},
+             {"reviewSubmission": ("reviewSubmissions", sub), "appStoreVersion": ("appStoreVersions", "ver2")})
+    n = len(fake.writes())
+    capsys.readouterr()
+    code, _ = run(fake, "submit", str(kit), "--growth", "storage", "--include-draft-items", "--yes")
+    out = capsys.readouterr().out
+    assert code == 1 and len(fake.writes()) == n
+    assert "app version 1.1.0 (ver2)" in out and "AFTER_APPROVAL" in out and "--auto-release-ok" in out
+    assert fake.store["sub1"]["attributes"].get("submitted") is not True
+    code, _ = run(fake, "submit", str(kit), "--growth", "storage", "--include-draft-items", "--yes",
+                  "--auto-release-ok")
+    assert code == 0 and fake.store["sub1"]["attributes"]["submitted"] is True

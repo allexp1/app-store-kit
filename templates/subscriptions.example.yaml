@@ -1,0 +1,61 @@
+# Copy to KIT/subscriptions.yaml. Run subscriptions.py check KIT, then plan KIT.
+# Names, product IDs, offers and prices are examples; use the app's actual products.
+# Quote dates and decimal prices. Omitted optional attributes are left alone.
+groups:
+  - reference_name: Premium
+    # id: "123456789"  # Set this when renaming an existing group; never moves products.
+    localizations:
+      en-US:
+        name: Premium
+        custom_app_name: Example App  # Optional; empty text requests clearing it.
+    subscriptions:
+      - product_id: com.example.app.premium.monthly
+        reference_name: Premium Monthly
+        duration: ONE_MONTH
+        group_level: 1  # 1 is highest; equal benefits may share a level.
+        family_sharing: false  # Once enabled, Apple does not let you turn it off.
+        review_note: Open Settings, tap Upgrade, and choose Premium Monthly. Restore is on the same screen.
+        # review_screenshot: subscriptions/monthly-review.png  # Existing PNG/JPEG inside KIT.
+        localizations:
+          en-US:
+            name: Premium Monthly
+            description: All premium features, billed monthly.
+        prices:
+          USA: "4.99"
+          GBR: "4.99"
+        # Per-territory prices preserve current subscriber prices.
+        introductory_offers:
+          - territory: USA
+            mode: FREE_TRIAL
+            duration: ONE_WEEK
+            periods: 1
+            # start_date: "2026-11-01"
+            # end_date: "2026-12-31"
+        promotional_offers:
+          - name: Welcome Back
+            offer_code: welcome_back_month
+            mode: PAY_UP_FRONT
+            duration: ONE_MONTH
+            periods: 1
+            prices:
+              USA: "1.99"
+        offer_codes: browser
+      - product_id: com.example.app.premium.yearly
+        reference_name: Premium Yearly
+        duration: ONE_YEAR
+        group_level: 1
+        family_sharing: false
+        review_note: Open Settings, tap Upgrade, and choose Premium Yearly.
+        localizations:
+          en-US:
+            name: Premium Yearly
+            description: All premium features, billed yearly.
+        # Alternative to prices: select a base price and use Apple's equalizations.
+        pricing:
+          base_territory: USA
+          price: "39.99"
+          equalize: true
+          preserve_current_price: true
+          # start_date: "2026-11-01"
+        # Setting preserve_current_price: false can affect existing subscribers.
+        # Apply refuses potential increases without --price-increase-ok as well as --yes.

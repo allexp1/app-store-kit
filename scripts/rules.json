@@ -78,7 +78,8 @@
         ],
         "required": false,
         "required_from": "2027-04",
-        "required_note": "Required from April 2027 for apps built with the iOS 27.1 SDK or later"
+        "required_note": "Required from April 2027 for apps built with the iOS 27.1 SDK or later",
+        "required_sdk": "iOS 27.1"
       },
       "iphone-duo-inner": {
         "label": "iPhone Duo, inner display",
@@ -91,7 +92,8 @@
         ],
         "required": false,
         "required_from": "2027-04",
-        "required_note": "Required from April 2027 for apps built with the iOS 27.1 SDK or later"
+        "required_note": "Required from April 2027 for apps built with the iOS 27.1 SDK or later",
+        "required_sdk": "iOS 27.1"
       },
       "iphone-di-large": {
         "label": "iPhone with Dynamic Island (large display)",
@@ -126,7 +128,8 @@
           ]
         ],
         "required": false,
-        "required_note": "Required only if iphone-di-large is not provided"
+        "required_note": "Required only if iphone-di-large is not provided",
+        "required_unless": "iphone-di-large"
       },
       "iphone-di-medium": {
         "label": "iPhone with Dynamic Island (medium display)",

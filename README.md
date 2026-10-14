@@ -10,6 +10,11 @@ You say one sentence. It does the rest, step by step, and stops only where Apple
 | "Ship an update" | Drafts What's New from your git history, raises the version, uploads the build, creates the new version and updates every language |
 | "Add German and Japanese" | Adapts the store texts per language (not word-for-word), makes localized screenshots, places them |
 | "What's the status?" | Reads your App Store Connect account and answers in plain words |
+| "Market it" | Custom product pages, A/B tests of the product page, in-app events |
+| "Is it working?" | Downloads Apple's analytics and shows which page converts, and what to test next |
+| "Apple rejected my app" | Maps each cited guideline to a fix and drafts the reply (you send it) |
+| "Answer the reviews" | Reports themes and crashes from reviews, drafts replies, sends only the ones you approve |
+| "Add subscriptions", "run a beta", "change the price" | Subscriptions, external TestFlight with feedback triage, prices per country and pre-orders |
 
 ## What it does by itself, and where it stops
 
@@ -18,7 +23,7 @@ You say one sentence. It does the rest, step by step, and stops only where Apple
 - **Chrome does the few screens the API can't reach,** such as App Privacy and creating the app record.
 - **You do only what Apple reserves for the account holder:** signing in, agreements, tax, banking, EU trader status.
   The skill opens the exact page, outlines the button and waits for you to say "done". It never presses Agree.
-- **Nothing reaches Apple without your yes.** Before changing anything it shows one page of planned changes
+- **Nothing reaches Apple without your yes.** A plan is used once and only for the files and account state it saw. Before changing anything it shows one page of planned changes
   (`connect-plan.md`). Upload, submit and release each ask again.
 - **One page shows where you are:** `STATUS.md`, with ✅ done, ✋ your turn, 🛑 needs your yes, ⬜ to do.
 
@@ -56,6 +61,10 @@ prints or commits the key file.
   - `locales.py`, `whats_new.py` and `release.py`: languages, update notes, version bump, archive and upload.
   - `render.py` and `capture.sh`: screenshots.
   - `lint_metadata.py`, `validate_kit.py`, `preview_check.py` and `connect_guide.py`: checks and a hand-typing guide.
+  - `growth.py` and `asc_reports.py`: growth and marketing, and measuring it.
+  - `rejection.py` and `reviews.py`: App Review rejections; ratings and approval-gated review replies.
+  - `subscriptions.py`, `testflight.py` and `pricing.py`: subscriptions, TestFlight betas and feedback, prices and
+    availability.
 - `references/`: Apple's specs, review guidelines, App Store Connect fields, the API, privacy labels and copywriting.
 - `tests/`: `./test.sh` runs everything offline, without keys.
 

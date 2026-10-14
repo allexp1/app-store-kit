@@ -208,3 +208,107 @@ def test_server_error_on_patch_is_retried_but_never_on_post():
     with pytest.raises(api.ASCError) as e:
         client(Scripted([err, err])).post("/v1/appAssetLibraryImages", {"data": {"type": "appAssetLibraryImages"}})
     assert e.value.status == 500
+
+
+def test_links_next_to_another_origin_is_refused_and_gets_no_token():
+    tr = Scripted([(200, {}, {"data": [{"id": "1"}], "links": {"next": "https://evil.example/v1/apps?cursor=AB"}})])
+    with pytest.raises(api.ASCError, match="outside https://api.appstoreconnect.apple.com"):
+        client(tr).get_all("/v1/apps")
+    assert len(tr.seen) == 1 and "evil" not in tr.seen[0][1]
+
+
+@pytest.mark.parametrize("url", ["http://api.appstoreconnect.apple.com/v1/apps",
+                                 "https://api.appstoreconnect.apple.com.evil.example/v1/apps",
+                                 "https://user@api.appstoreconnect.apple.com/v1/apps",
+                                 "https://api.appstoreconnect.apple.com:8443/v1/apps",
+                                 "//evil.example/v1/apps"])
+def test_absolute_urls_off_apples_api_are_refused(url):
+    tr = Scripted([])
+    with pytest.raises(api.ASCError, match="refused"):
+        client(tr).get(url)
+    with pytest.raises(api.ASCError, match="refused"):
+        client(tr, dry_run=True).post(url, {"data": {"type": "apps"}})
+    assert tr.seen == []
+
+
+def test_absolute_url_on_apples_api_is_followed_with_the_token():
+    tr = Scripted([(200, {}, {"data": {"id": "x"}})])
+    client(tr).get("https://api.appstoreconnect.apple.com/v1/apps/x")
+    assert tr.seen[0][2]["Authorization"] == "Bearer TOKEN"
+
+
+def test_token_is_never_attached_when_the_base_url_is_elsewhere():
+    tr = Scripted([])
+    c = api.Client(lambda: "TOKEN", transport=tr, base_url="https://proxy.example")
+    with pytest.raises(api.ASCError, match="token"):
+        c.get("/v1/apps")
+    assert tr.seen == []
+
+
+# ------------------------------------------------------------------------------------------------ redirects
+def _servers():
+    """Two local HTTP origins: A redirects /jump to B; both echo the Authorization header they received."""
+    import http.server
+    import threading
+
+    seen = {}
+
+    def handler(name, target):
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.setdefault(name, []).append(self.headers.get("Authorization"))
+                if self.path == "/jump":
+                    self.send_response(302)
+                    self.send_header("Location", target() + "/land")
+                    self.end_headers()
+                    return
+                if self.path == "/local":
+                    self.send_response(302)
+                    self.send_header("Location", "/land")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+        return H
+
+    b = http.server.HTTPServer(("127.0.0.1", 0), handler("B", lambda: ""))
+    burl = f"http://127.0.0.1:{b.server_port}"
+    a = http.server.HTTPServer(("127.0.0.1", 0), handler("A", lambda: burl))
+    aurl = f"http://127.0.0.1:{a.server_port}"
+    for s in (a, b):
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    return a, b, aurl, burl, seen
+
+
+def test_redirect_with_the_token_to_another_origin_is_refused():
+    a, b, aurl, burl, seen = _servers()
+    try:
+        with pytest.raises(api.ASCError, match="redirect carrying the API token"):
+            api.urllib_transport("GET", aurl + "/jump", {"Authorization": "Bearer SYNTHETIC"}, None, timeout=5)
+        assert "B" not in seen                       # the token never reached the other origin
+        # Without a token (a pre-signed download) the same redirect is followed.
+        status, _, _ = api.urllib_transport("GET", aurl + "/jump", {}, None, timeout=5)
+        assert status == 200 and seen["B"] == [None]
+        # A redirect within the same origin keeps working with the token.
+        status, _, _ = api.urllib_transport("GET", aurl + "/local", {"Authorization": "Bearer SYNTHETIC"}, None,
+                                            timeout=5)
+        assert status == 200 and seen["A"][-1] == "Bearer SYNTHETIC"
+    finally:
+        a.shutdown()
+        b.shutdown()
+
+
+def test_redirect_guard_compares_full_origins():
+    import urllib.request
+    g = api.AuthRedirectGuard()
+    req = urllib.request.Request("https://api.appstoreconnect.apple.com/v1/x",
+                                 headers={"Authorization": "Bearer T"})
+    for off in ("https://evil.example/v1/x", "http://api.appstoreconnect.apple.com/v1/x",
+                "https://api.appstoreconnect.apple.com:8443/v1/x"):
+        with pytest.raises(api.ASCError, match="redirect"):
+            g.redirect_request(req, None, 302, "Found", {}, off)
+    assert g.redirect_request(req, None, 302, "Found", {}, "https://api.appstoreconnect.apple.com/v1/y")

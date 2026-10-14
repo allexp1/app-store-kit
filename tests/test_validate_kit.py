@@ -23,6 +23,9 @@ def kit_with(tmp_path, sets):
     for (loc, slot), (size, n) in sets.items():
         for i in range(n):
             png(tmp_path / "screenshots" / loc / slot / f"{i + 1:02d}.png", size)
+    for loc, slot in sets:
+        if slot == "iphone-di-medium":
+            png(tmp_path / "screenshots" / loc / "iphone-di-large" / "01.png", (1260, 2736))
     return tmp_path
 
 
@@ -76,6 +79,7 @@ def test_more_than_ten_screenshots_fails(tmp_path, capsys):
 
 def test_duo_becomes_required_in_april_2027(tmp_path, capsys):
     kit = kit_with(tmp_path, {("en-US", "iphone-di-medium"): (IPHONE, 1)})
+    (kit / "facts.yaml").write_text("sdk: iOS 27.1\n")
     assert run([kit, "--platforms", "iphone", "--today", "2026-10-14"]) == 0
     assert run([kit, "--platforms", "iphone", "--today", "2027-04-02"]) == 1
     assert "iphone-duo-inner" in capsys.readouterr().out
@@ -167,3 +171,84 @@ def test_creative_jpeg_is_fine_for_21_9_header_but_not_for_16_9(tmp_path, capsys
     Image.new("RGB", (5244, 2950), (10, 180, 100)).save(kit / "creative/en-US/search.jpg", "JPEG")
     assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 1
     assert "type JPEG, need PNG" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('sdk,day,expected', [
+    ('iOS 27.0', '2027-04-01', 'optional'), ('iOS 27.1', '2027-03-31', 'future'),
+    ('iOS 27.1', '2027-04-01', 'required'), ('iOS 28', '2027-04-01', 'required'),
+    (None, '2027-04-01', 'unknown')])
+def test_duo_requirements_use_date_and_build_sdk(tmp_path, rules, sdk, day, expected):
+    import datetime as dt
+    kit = kit_with(tmp_path, {('en-US', 'iphone-di-medium'): (IPHONE, 1)})
+    (kit / 'facts.yaml').write_text(yaml.safe_dump({'sdk': sdk}))
+    rep, missing = vk.Report(), {}
+    vk.check_screenshots(kit, rules, rep, {'iphone'}, False, dt.date.fromisoformat(day), missing)
+    duo = [i for i in rep.items if 'iphone-duo-' in i[2]]
+    if expected == 'optional':
+        assert not duo
+    else:
+        assert len(duo) == 2
+        assert all(i[0] == {'future': 'NOTE', 'unknown': 'WARN', 'required': 'ERROR'}[expected] for i in duo)
+    if expected == 'unknown':
+        assert all('SDK is unknown' in i[2] for i in duo)
+    assert bool(rep.errors) == (expected == 'required')
+
+
+def test_sdk_sources_and_rule_threshold():
+    import datetime as dt
+    for facts in ({'sdk': 'iphoneos27.1'}, {'build': {'sdk': 'iOS 27.1 SDK'}},
+                  {'sdk': {'name': 'iOS', 'version': '27.1'}}, {'app': {'build_sdk': '27.1'}}):
+        assert vk.build_sdk(facts) == (27, 1)
+    slot = {'required_from': '2027-04', 'required_sdk': 'iOS 28.2'}
+    assert vk.slot_requirement(slot, dt.date(2027, 5, 1), {'sdk': 'iOS 28.1'}, set()) == 'optional'
+
+
+@pytest.mark.parametrize('large', [None, 'iphone-di-large', 'iphone-faceid-large'])
+def test_faceid_large_warns_only_without_dynamic_island_large(tmp_path, rules, large):
+    import datetime as dt
+    png(tmp_path / 'screenshots/en-US/iphone-di-medium/01.png', IPHONE)
+    if large:
+        png(tmp_path / 'screenshots/en-US' / large / '01.png', tuple(rules['screenshots']['slots'][large]['sizes'][0]))
+    rep, missing = vk.Report(), {}
+    vk.check_screenshots(tmp_path, rules, rep, {'iphone'}, False, dt.date(2026, 10, 14), missing)
+    assert not missing.get('en-US') and not rep.errors
+    assert any(lvl == 'WARN' and 'iphone-faceid-large' in m for lvl, _, m in rep.items) == (large is None)
+
+
+def test_growth_previews_receive_main_preview_checks(tmp_path, rules, monkeypatch):
+    import preview_check
+    paths = []
+    for root in ('growth/page/previews', 'growth/test/treatment/previews', 'previews'):
+        folder = tmp_path / root / 'en-US/iphone-di-medium'
+        folder.mkdir(parents=True)
+        for i in range(4):
+            path = folder / f'{i}.mp4'
+            path.write_bytes(b'x')
+            paths.append(path)
+    monkeypatch.setattr(preview_check, 'ffprobe', lambda path: {'file': path})
+    seen = []
+    def check(probe, path, family, frozen):
+        seen.append(path)
+        assert probe['file'] == path and family == 'iphone' and frozen is rules
+        return ['bad duration'], ['bad bitrate']
+    monkeypatch.setattr(preview_check, 'check', check)
+    rep = vk.Report()
+    vk.check_previews(tmp_path, rules, rep)
+    vk.check_growth(tmp_path, rules, rep, False)
+    assert set(seen) == set(paths)
+    assert len([i for i in rep.errors if '4 previews' in i[2]]) == 3
+    assert len([i for i in rep.errors if 'bad duration' in i[2]]) == 12
+
+
+@pytest.mark.parametrize('seconds,size,bad', [(15, 500_000_000, False), (30, 1, False),
+    (14.9, 1, True), (30.1, 1, True), (20, 500_000_001, True)])
+def test_event_video_duration_and_size(tmp_path, monkeypatch, seconds, size, bad):
+    import preview_check
+    path = tmp_path / 'card.mp4'
+    path.write_bytes(b'x')
+    probe = {'format': {'duration': str(seconds), 'size': str(size)}, 'streams': [
+        {'codec_type': 'video', 'width': 1920, 'height': 1080, 'avg_frame_rate': '30/1'}]}
+    monkeypatch.setattr(preview_check, 'ffprobe', lambda p: probe)
+    rep = vk.Report()
+    vk.check_event_video(path, vk.EVENT_MEDIA['card'], rep, 'event')
+    assert bool(rep.errors) is bad

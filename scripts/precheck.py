@@ -25,7 +25,9 @@ Without --kit and --out the Markdown goes to stdout.
 --xcode overrides the Xcode version (otherwise `xcodebuild -version`, .xcode-version, project.yml
 xcodeVersion, pbxproj LastUpgradeCheck). --today overrides the date used for dated rules.
 
-Exit code: 2 if any BLOCKER, 1 if any LIKELY REJECTION (or any WARNING with --strict), else 0.
+Decisions: KIT/precheck-decisions.yaml maps each unscanned check id to {decision: ok|fixed|n/a, why: evidence}.
+Exit code: 2 if any BLOCKER, 1 if unscanned checks remain undecided, any LIKELY REJECTION,
+or any WARNING with --strict; else 0.
 """
 from __future__ import annotations
 
@@ -690,6 +692,7 @@ class Result:
     def __init__(self, cat):
         self.cat = cat
         self.findings, self.passes, self.candidates, self.ran = [], [], [], []
+        self.decisions = {}
 
     def _meta(self, cid):
         c = self.cat.get(cid) or {}
@@ -2097,11 +2100,23 @@ def chk_free_claims(p, r, opt):
 def chk_duo_screens(p, r, opt):
     if not p.kit or not (p.kit / "screenshots").is_dir():
         return
-    slots = {d.name for loc in (p.kit / "screenshots").iterdir() if loc.is_dir() for d in loc.iterdir() if d.is_dir()}
-    if not any("duo" in s for s in slots):
-        sev = "BLOCKER" if opt.today >= dt.date(2027, 4, 1) else "WARNING"
-        r.fail("MD-04", "No iPhone Duo screenshots; Apple requires them for submissions from April 2027.",
-               [p.rel(p.kit / "screenshots")], "Plan iPhone Duo captures (Xcode 27.1 simulator).", severity=sev)
+    from validate_kit import load_rules, slot_requirement, images_in
+    rules = load_rules(kit=p.kit)
+    for loc in sorted(x for x in (p.kit / "screenshots").iterdir() if x.is_dir()):
+        present = {d.name for d in loc.iterdir() if d.is_dir() and images_in(d)}
+        if not any(s.startswith("iphone-") for s in present):
+            continue
+        for sid, slot in rules["screenshots"]["slots"].items():
+            if not sid.startswith("iphone-duo-") or sid in present:
+                continue
+            state = slot_requirement(slot, opt.today, p.facts, present)
+            if state == "optional":
+                continue
+            detail = " Build SDK is unknown in facts.yaml; the SDK condition cannot be checked." if state == "unknown" else ""
+            r.fail("MD-04", f"[{loc.name}] Missing {sid}. {slot.get('required_note', '')}{detail}",
+                   [p.rel(loc)], "Record the release build SDK in facts.yaml and add required captures.",
+                   severity="BLOCKER" if state == "required" else "WARNING")
+
 
 
 @check("MD-05")
@@ -2189,7 +2204,17 @@ def run(p, cat, opt):
         except Exception as e:  # one broken check must not hide the rest
             r.ask(ids[0], f"Check crashed ({type(e).__name__}: {e}); review {', '.join(ids)} by hand.")
         r.ran.extend(ids)
+    if p.kit:
+        decisions = p._load_yaml(p.kit / "precheck-decisions.yaml")
+        if isinstance(decisions, dict):
+            r.decisions = {cid: row for cid, row in decisions.items() if isinstance(row, dict)
+                           and row.get("decision") in ("ok", "fixed", "n/a")
+                           and isinstance(row.get("why"), str) and row["why"].strip()}
     return r
+
+
+def undecided(r):
+    return [cid for cid in not_covered(r.cat) if cid not in r.decisions]
 
 
 def implemented_counts(cat):
@@ -2203,6 +2228,7 @@ def summary(r):
     s = {sev: sum(1 for f in r.findings if f["severity"] == sev) for sev in SEVERITIES}
     s["PASS"] = len(r.passes)
     s["FOR CLAUDE"] = len(r.candidates)
+    s["NOT SCANNED"] = len(undecided(r))
     return s
 
 
@@ -2210,7 +2236,7 @@ def exit_code(r, strict=False):
     sevs = {f["severity"] for f in r.findings}
     if "BLOCKER" in sevs:
         return 2
-    if "LIKELY REJECTION" in sevs or (strict and "WARNING" in sevs):
+    if undecided(r) or "LIKELY REJECTION" in sevs or (strict and "WARNING" in sevs):
         return 1
     return 0
 
@@ -2225,8 +2251,8 @@ def to_markdown(p, r, cat, opt):
     out = [f"# Pre-check: {p.yml.get('name') if p.yml else p.root.name}", "",
            f"Project `{p.root}`" + (f", kit `{p.kit}`" if p.kit else "") + f". Run {opt.today.isoformat()} "
            "against references/precheck-rules.md (App Review Guidelines of June 8, 2026).", "",
-           "| BLOCKER | LIKELY REJECTION | WARNING | PASS | For Claude to judge |", "|---|---|---|---|---|",
-           f"| {s['BLOCKER']} | {s['LIKELY REJECTION']} | {s['WARNING']} | {s['PASS']} | {s['FOR CLAUDE']} |", ""]
+           "| BLOCKER | LIKELY REJECTION | WARNING | PASS | For Claude to judge | Not scanned, undecided |", "|---|---|---|---|---|---|",
+           f"| {s['BLOCKER']} | {s['LIKELY REJECTION']} | {s['WARNING']} | {s['PASS']} | {s['FOR CLAUDE']} | {s['NOT SCANNED']} |", ""]
     for sev in SEVERITIES:
         items = [f for f in r.findings if f["severity"] == sev]
         out += [f"## {sev} ({len(items)})", ""]
@@ -2248,9 +2274,16 @@ def to_markdown(p, r, cat, opt):
         out.append(f"- [ ] **{c['id']}** ({c['guideline']}): {c['question']}")
         if c["evidence"]:
             out.append(f"  - Evidence: {', '.join('`' + e + '`' for e in c['evidence'] if e)}")
-    rest = not_covered(cat)
-    out += ["", "## Not scanned (human or App Store Connect checks)", "",
-            ", ".join(f"{i}" for i in rest) + ". See references/precheck-rules.md.", ""]
+    out += ["", "## Not scanned — Claude must decide", "",
+            "Record each decision in KIT/precheck-decisions.yaml as `id: {decision: ok|fixed|n/a, why: evidence}`.", ""]
+    for cid in not_covered(cat):
+        row = cat[cid]
+        decision = r.decisions.get(cid)
+        out.append(f"- [{'x' if decision else ' '}] **{cid}** ({row.get('guideline', '')}): {row.get('what', '')}")
+        if decision:
+            out.append(f"  - Decision: {decision['decision']} — {decision['why']}")
+    if undecided(r):
+        out += ["", "Readiness: incomplete; unscanned checks remain undecided.", ""]
     return "\n".join(out)
 
 
@@ -2258,7 +2291,8 @@ def to_json(p, r, cat):
     auto, semi = implemented_counts(cat)
     return {"project": str(p.root), "kit": str(p.kit) if p.kit else None, "summary": summary(r),
             "findings": r.findings, "passes": r.passes, "candidates": r.candidates,
-            "implemented": {"auto": auto, "semi": semi}, "not_scanned": not_covered(cat)}
+            "implemented": {"auto": auto, "semi": semi}, "not_scanned": not_covered(cat),
+            "undecided": undecided(r), "decisions": r.decisions}
 
 
 def main(argv=None):

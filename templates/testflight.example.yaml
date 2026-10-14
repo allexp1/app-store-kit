@@ -1,0 +1,37 @@
+# Copy to KIT/testflight.yaml. Numbers are strings; secrets never go in this file.
+# App identity/version/platform come from facts.yaml; api.app_id may be in connect.yaml.
+build: "42"
+groups:
+  - name: Team
+    type: internal
+    # Optional: only testers already present in an internal group can be added by API.
+    # testers_private: testflight.internal_testers
+  - name: Preview
+    type: external
+    public_link:
+      enabled: false
+      limit: 200  # 1–10000; null disables the public-link limit
+    testers_private: testflight.external_testers
+test_information:
+  en-US:
+    what_to_test: "Try onboarding, purchases and restore. Report any crashes or missing data."
+    description: "An early version for testing the next release."
+    feedback_email: "beta@example.com"  # Public support mailbox, never a tester address
+    marketing_url: "https://example.com"
+    privacy_policy_url: "https://example.com/privacy"
+beta_review:
+  contact_private: testflight.review_contact
+  demo_account_required: false
+  notes: "Describe the steps needed to reach the features under test."
+
+# Put the following STRUCTURE in gitignored KIT/private.yaml, then fill it locally.
+# testflight:
+#   external_testers: []   # Email strings go here only
+#   internal_testers: []   # Existing internal testers only
+#   review_contact:
+#     first_name: ""
+#     last_name: ""
+#     phone: ""           # Quote the international phone number
+#     email: ""
+#     demo_username: ""   # Required when demo_account_required is true
+#     demo_password: ""

@@ -2,6 +2,11 @@
 
 Resources live in a dict keyed by id: {"type", "id", "attributes", "relationships"}. Paths follow the JSON:API
 conventions asc_sync.py uses: /vN/<type>[/<id>[/<child>|/relationships/<rel>]].
+
+The fake is strict where a real mistake would fail against Apple: the path's /v1 or /v2 must be the one
+references/asc-api.md gives for that resource, a request body must have the JSON:API top-level shape
+(data.type matching the path, attributes and relationships objects, nothing else), and a PATCH must name the
+resource it changes. A violation raises AssertionError, so the test fails instead of the code seeing a 404.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ CHILD = {"items": "reviewSubmissionItems",
     "inAppPurchasesV2": "inAppPurchases", "inAppPurchaseVersions": "inAppPurchaseVersions",
     "inAppPurchaseLocalizations": "inAppPurchaseLocalizations", "image": "inAppPurchaseImages",
     "appStoreReviewScreenshot": "inAppPurchaseAppStoreReviewScreenshots", "manualPrices": "inAppPurchasePrices",
+    "pricePoints": "inAppPurchasePricePoints",
     # growth: custom product pages, product page optimization, in-app events
     "appCustomProductPages": "appCustomProductPages", "appCustomProductPageVersions": "appCustomProductPageVersions",
     "appCustomProductPageLocalizations": "appCustomProductPageLocalizations",
@@ -33,6 +39,47 @@ TO_ONE = {"ageRatingDeclaration", "appStoreReviewDetail", "build", "appStoreVers
           "image", "appStoreReviewScreenshot"}
 UPLOADABLE = {"appAssetLibraryImages", "appAssetLibraryVideos", "inAppPurchaseImages",
               "inAppPurchaseAppStoreReviewScreenshots"}
+# Path roots served under /v2 (asc-api.md §6 and growth-marketing.md); every other root is /v1.
+V2_ROOTS = {"inAppPurchases", "inAppPurchaseLocalizations", "inAppPurchaseImages", "appStoreVersionExperiments"}
+# Path roots whose ids are another type's ids (Apple: a purchase's price schedule id is the purchase id).
+ID_ALIAS = {"inAppPurchasePriceSchedules": "inAppPurchases"}
+DATA_KEYS = {"type", "id", "attributes", "relationships"}
+
+
+def check_version(path):
+    segs = [p for p in path.split("/") if p]
+    assert len(segs) >= 2 and segs[0] in ("v1", "v2"), f"{path}: no /v1 or /v2 prefix"
+    want = "v2" if segs[1] in V2_ROOTS else "v1"
+    assert segs[0] == want, f"{path}: {segs[1]} lives under /{want}, not /{segs[0]}"
+
+
+def check_resource(d, where, typ=None, need_id=False):
+    assert isinstance(d, dict), f"{where}: data must be an object"
+    assert set(d) <= DATA_KEYS, f"{where}: unexpected key(s) {sorted(set(d) - DATA_KEYS)} in data"
+    assert isinstance(d.get("type"), str) and d["type"], f"{where}: data.type is missing"
+    if typ:
+        assert d["type"] == typ, f"{where}: data.type {d['type']!r} doesn't match the path ({typ!r})"
+    if need_id:
+        assert isinstance(d.get("id"), str), f"{where}: data.id is missing"
+    if "attributes" in d:
+        assert isinstance(d["attributes"], dict), f"{where}: attributes must be an object"
+        assert not {"id", "type"} & set(d["attributes"]), f"{where}: id/type belong in data, not attributes"
+    for k, v in (d.get("relationships") or {}).items():
+        assert isinstance(v, dict) and set(v) == {"data"}, f"{where}: relationship {k} must be {{data: ...}}"
+        refs = v["data"] if isinstance(v["data"], list) else [v["data"]]
+        for r in refs:
+            assert isinstance(r, dict) and set(r) == {"type", "id"}, f"{where}: relationship {k} needs type + id"
+
+
+def check_linkage(js, where, to_many=True):
+    assert isinstance(js, dict) and set(js) == {"data"}, f"{where}: a relationship body is {{data: ...}}"
+    refs = js["data"]
+    if to_many:
+        assert isinstance(refs, list), f"{where}: a to-many relationship body is a list"
+    else:
+        refs = [refs]
+    for r in refs:
+        assert isinstance(r, dict) and set(r) == {"type", "id"}, f"{where}: linkage needs type + id only"
 
 
 class FakeASC:
@@ -85,11 +132,14 @@ class FakeASC:
             assert "Authorization" not in headers, "upload parts must not carry the JWT"
             self.calls.append((method, "upload:" + u.path, q, len(body or b"")))
             return 200, {}, b""
+        assert u.scheme == "https" and u.netloc == "api.appstoreconnect.apple.com", f"request to {url}"
+        check_version(u.path)
         self.calls.append((method, u.path, q, js))
         if (method, u.path) in self.fail:
             status, code = self.fail[(method, u.path)]
             return self._err(status, code)
-        parts = [p for p in u.path.split("/") if p][1:]  # drop v1/v2
+        parts = [p for p in u.path.split("/") if p][1:]  # the version was checked above
+        self._check_body(method, parts, js, u.path)
         try:
             if method == "GET":
                 doc = self._get(parts, q)
@@ -115,6 +165,37 @@ class FakeASC:
         except KeyError:
             return self._err(404, "NOT_FOUND")
         return 200, {"x-rate-limit": "user-hour-lim:3500;user-hour-rem:3400;"}, json.dumps(doc).encode()
+
+    def _check_body(self, method, parts, js, path):
+        rel = len(parts) == 4 and parts[2] == "relationships"
+        if method == "GET":
+            assert js is None, f"GET {path} with a body"
+            if len(parts) >= 2 and parts[1] in self.store:
+                want = ID_ALIAS.get(parts[0], parts[0])
+                got = self.store[parts[1]]["type"]
+                assert got == want or (len(parts) > 2 and parts[0] in ID_ALIAS), \
+                    f"GET {path}: {parts[1]} is a {got}, not a {parts[0]}"
+            return
+        if rel:
+            check_linkage(js, f"{method} {path}", to_many=method != "PATCH")
+            return
+        if method == "DELETE":
+            assert js is None and len(parts) == 2, f"DELETE {path}: delete one resource, without a body"
+            return
+        assert isinstance(js, dict) and "data" in js and set(js) <= {"data", "included"}, \
+            f"{method} {path}: the body is {{data, included?}}"
+        if method == "POST":
+            assert len(parts) == 1, f"POST {path}: create on the collection path"
+            check_resource(js["data"], f"POST {path}", typ=parts[0])
+            assert "id" not in js["data"], f"POST {path}: a new resource has no id"
+            for inc in js.get("included") or []:
+                check_resource(inc, f"POST {path} included", need_id=True)
+        elif method == "PATCH":
+            assert len(parts) == 2, f"PATCH {path}: patch one resource"
+            check_resource(js["data"], f"PATCH {path}", typ=parts[0], need_id=True)
+            assert js["data"]["id"] == parts[1], f"PATCH {path}: data.id {js['data']['id']!r} isn't the path's id"
+            if parts[1] in self.store:
+                assert self.store[parts[1]]["type"] == parts[0], f"PATCH {path}: the id is another type"
 
     def _err(self, status, code):
         return status, {}, json.dumps({"errors": [{"status": str(status), "code": code, "title": "fake error",
@@ -215,6 +296,19 @@ class FakeASC:
             r["attributes"].setdefault("state", "PREPARE_FOR_SUBMISSION")
         if typ == "appEvents":
             r["attributes"].setdefault("eventState", "DRAFT")
+        if typ == "appStoreVersions":
+            r["attributes"].setdefault("appVersionState", "PREPARE_FOR_SUBMISSION")
+        if typ == "inAppPurchasePriceSchedules":  # replaces the purchase's manual prices (inline included prices)
+            iap = rels["inAppPurchase"][1]
+            for old in [x for x in self.of_type("inAppPurchasePrices")
+                        if (x["relationships"].get("inAppPurchaseV2") or {}).get("data", {}).get("id") == iap]:
+                del self.store[old["id"]]
+            for inc in js.get("included") or []:
+                assert inc["type"] == "inAppPurchasePrices", "included: inline inAppPurchasePrices only"
+                pt = inc["relationships"]["inAppPurchasePricePoint"]["data"]["id"]
+                assert self.store[pt]["type"] == "inAppPurchasePricePoints", f"{pt} isn't a price point"
+                self.add("inAppPurchasePrices", inc.get("attributes"), {
+                    "inAppPurchaseV2": ("inAppPurchases", iap), "inAppPurchasePricePoint": ("inAppPurchasePricePoints", pt)})
         if typ in self.on_create:
             self.on_create[typ](r)
         return {"data": r}

@@ -9,7 +9,9 @@ Config   resolve_config(): CLI args, then env (ASC_KEY_ID, ASC_ISSUER_ID, ASC_KE
          `api: {key_id, issuer_id, key_path?}`. Without a key path the key file AuthKey_<KID>.p8 is looked for
          where altool looks: ./private_keys, ~/private_keys, ~/.private_keys, ~/.appstoreconnect/private_keys,
          $API_PRIVATE_KEYS_DIR.
-Client   request(method, path, params, json) over urllib (JSON:API); get_all() follows links.next; 429 (and 5xx on GET/PATCH/DELETE) is retried
+Client   request(method, path, params, json) over urllib (JSON:API); get_all() follows links.next (only on
+         https://api.appstoreconnect.apple.com: the JWT never goes to another origin, a link elsewhere raises, and so
+         does a redirect off that origin while the JWT is attached); 429 (and 5xx on GET/PATCH/DELETE) is retried
          with Retry-After or exponential backoff; errors raise ASCError(status, errors[]). X-Rate-Limit is parsed
          into client.rate_limit. upload_operations() PUTs the parts of an asset reservation (no JWT on those).
          The transport is pluggable (tests inject a fake). dry_run=True records every non-GET call in
@@ -31,6 +33,7 @@ import urllib.request
 import yaml
 
 BASE_URL = "https://api.appstoreconnect.apple.com"
+API_ORIGIN = BASE_URL        # the only origin that ever receives the JWT
 AUDIENCE = "appstoreconnect-v1"
 MAX_LIFETIME = 1200          # Apple: exp - iat at most 20 minutes
 # Apple rejects exp more than 20 minutes after ITS clock, so a Mac running a second fast fails with exactly 1200 s
@@ -209,14 +212,44 @@ class TokenSigner:
 
 
 # ---------------------------------------------------------------------------------------------------- transport
+def _origin(url):
+    u = urllib.parse.urlsplit(url)
+    default = {"https": 443, "http": 80}.get(u.scheme)
+    return u.scheme, u.hostname, u.port or default
+
+
+class AuthRedirectGuard(urllib.request.HTTPRedirectHandler):
+    """Follows redirects, but a request carrying Authorization (the JWT) may only be redirected within its own
+    origin: urllib would otherwise resend the header to whatever host the Location names. A request without
+    Authorization (a pre-signed report or upload URL) is redirected as usual."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.has_header("Authorization") and _origin(newurl) != _origin(req.full_url):
+            u = urllib.parse.urlsplit(newurl)
+            raise ASCError(code, [], req.get_method(), "",
+                           message=f"refused to follow a redirect carrying the API token to {u.scheme}://{u.netloc}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(AuthRedirectGuard)
+
+
 def urllib_transport(method, url, headers, body, timeout=120):
-    """(method, url, headers, body bytes|None) → (status, headers dict lower-cased, body bytes)."""
+    """(method, url, headers, body bytes|None) → (status, headers dict lower-cased, body bytes).
+    Redirects with the JWT never leave the request's origin (AuthRedirectGuard)."""
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read()
     except urllib.error.HTTPError as e:
         return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, e.read() or b""
+
+
+def same_origin(url, origin):
+    """True when url is https on exactly origin's host and port (no userinfo tricks)."""
+    u, o = urllib.parse.urlsplit(url), urllib.parse.urlsplit(origin)
+    return u.scheme == "https" and u.scheme == o.scheme and u.hostname == o.hostname and \
+        (u.port or 443) == (o.port or 443) and not u.username and not u.password
 
 
 def parse_rate_limit(value):
@@ -250,7 +283,16 @@ class Client:
         return self.rate_limit.get("user-hour-rem")
 
     def _url(self, path, params):
-        url = path if path.startswith("http") else self.base_url + (path if path.startswith("/") else "/" + path)
+        parts = urllib.parse.urlsplit(path)
+        if parts.scheme or parts.netloc:
+            # An absolute URL (links.next, a link in a response) may only point at Apple's API host: the JWT goes
+            # with every request, so a link elsewhere is refused instead of followed.
+            if not same_origin(path, API_ORIGIN):
+                raise ASCError(0, [], "GET", "", message=f"refused to follow a link outside {API_ORIGIN}: "
+                                                         f"{parts.scheme}://{parts.netloc}")
+            url = path
+        else:
+            url = self.base_url + (path if path.startswith("/") else "/" + path)
         if params:
             q = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}, safe="[],:")
             url += ("&" if "?" in url else "?") + q
@@ -280,6 +322,8 @@ class Client:
             return self._fake(method, path, json)
         headers = {"Accept": "application/json"}
         if self._token:
+            if not same_origin(url, API_ORIGIN):
+                raise ASCError(0, [], method, "", message=f"refused to send the API token outside {API_ORIGIN}")
             headers["Authorization"] = "Bearer " + self._token()
         body = None
         if json is not None:

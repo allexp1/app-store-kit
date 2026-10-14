@@ -229,6 +229,13 @@ Source: https://developer.apple.com/help/app-store-connect/reference/app-informa
 
 ## 6. In-app purchases (v2, version-based since 4.4.1)
 
+> Kit notes (2026-10-15, UNCONFIRMED shapes): price changes POST `/v1/inAppPurchasePriceSchedules` with
+> `inAppPurchase`, `baseTerritory`, `manualPrices` and inline `inAppPurchasePrices` (startDate null; the price point
+> from `GET /v2/inAppPurchases/{id}/pricePoints?filter[territory]=…`). A later purchase goes to review as a
+> `reviewSubmissionItems` `inAppPurchaseVersion`; an unversioned one through the `inAppPurchaseV2` relationship.
+> Clearing keywords and review notes sends null ("" is the fallback). asc_api refuses any redirect that would carry
+> the token to another origin.
+
 Source: https://developer.apple.com/documentation/appstoreconnectapi/managing-in-app-purchases
 
 | Step | Endpoint | Notes |
@@ -341,7 +348,17 @@ Notes:
 | Create the app record | **NO** | Xcode/Xcode Cloud "Set Up Distribution"; fastlane `produce` (spaceship) | Browser or person. |
 | Reset rating summary | **NO** | — | Browser. |
 | Apple silicon Mac / Vision Pro store availability of iOS apps | **NO** | — | Browser. |
-| First IAP or subscription submission with the first binary | **NO** (Apple's docs) | — | Person selects it on the version page. |
+| First IAP or subscription submission with the first binary | **NO** (Apple's docs) | — | Browser: the purchase's own page › Add for Review (live page, 2026-10-14; the version page's section is gone), then submit the version with it. |
+| App Review messages, rejection reasons, replies, appeals | **NO** (no path or schema in 4.5.1) | — | Browser; `scripts/rejection.py`, references/rejection-handling.md |
+| Product page optimization results (impressions, conversion, lift) | **NO** (tests carry only name, state, dates) | — | App Analytics in the browser; `scripts/asc_reports.py` covers custom product pages and sources |
+
+**Client safety (asc_api.py):** the JWT is attached only to `https://api.appstoreconnect.apple.com`; `links.next` or
+any absolute URL on another origin is refused. Pre-signed upload and report-download URLs carry their own auth and get
+no JWT.
+
+**UNCONFIRMED, used by asc_sync.py (verify on the next live read-only run):** the `include=` names on
+`reviewSubmissionItems`; sending `null` to clear optional texts and a custom product page's `deepLink`;
+`sourceFileChecksum` on Asset Library assets; the list paths for IAP versions and localizations.
 | Swapping header/search-results assets on an already-live version ("Publish" without a new version) | Not documented. Placements on approved parents return 409. | — | Browser (UNCONFIRMED whether the API can do it). The Help page (read 2026-10-14) documents the UI: live version › Header and Search Results › Header or Search Results › **Browse Assets** › an **approved** asset › **Next** › **Publish**. https://developer.apple.com/help/app-store-connect/manage-app-information/manage-your-app-store-assets |
 
 ---

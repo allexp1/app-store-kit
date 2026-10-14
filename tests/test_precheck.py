@@ -85,7 +85,7 @@ def test_photos_with_purpose_string_passes(tmp_path, capsys):
     code, data = run_json(root, capsys)
     assert "UP-08" not in ids(data)
     assert any(p["id"] == "UP-08" and "Photos" in p["message"] for p in data["passes"])
-    assert code == 0
+    assert code == 1
 
 
 def test_placeholder_purpose_string_is_flagged(tmp_path, capsys):
@@ -122,7 +122,7 @@ def test_screen_assumptions_warn(tmp_path, capsys):
     root = make_project(tmp_path, swift="let w = UIScreen.main.bounds.width\n")
     code, data = run_json(root, capsys)
     assert "DF-13" in ids(data, "WARNING")
-    assert code == 0
+    assert code == 1
     assert pc.main([str(root), "--xcode", "27.0", "--today", "2026-10-14", "--strict", "--json"]) == 1
 
 
@@ -188,10 +188,10 @@ def test_markdown_report_sections_and_exit_codes(tmp_path, capsys):
     assert "App/Main.swift:2" in md and "https://developer.apple.com" in md
 
 
-def test_clean_project_exits_zero_and_old_xcode_blocks(tmp_path, capsys):
+def test_unscanned_project_is_incomplete_and_old_xcode_blocks(tmp_path, capsys):
     root = make_project(tmp_path)
     code, data = run_json(root, capsys)
-    assert code == 0, data["findings"]
+    assert code == 1, data["findings"]
     code2, data2 = run_json(root, capsys, "--xcode", "16.4")
     assert code2 == 2 and "UP-01" in ids(data2, "BLOCKER")
 
@@ -239,3 +239,60 @@ def test_comments_and_previews_are_not_code(tmp_path, capsys):
     root = make_project(tmp_path, swift=swift, manifest=MANIFEST_UD)
     _, data = run_json(root, capsys)
     assert not {"UP-08", "UP-05", "PAY-04"} & set(ids(data))
+
+
+def test_unscanned_checks_have_actionable_report_and_decisions(tmp_path, capsys):
+    root = make_project(tmp_path)
+    kit = make_kit(tmp_path, {})
+    code, data = run_json(root, capsys, '--kit', kit)
+    assert code != 0 and data['summary']['NOT SCANNED'] == len(data['not_scanned']) > 0
+    md = (kit / 'PRECHECK.md').read_text()
+    assert 'Not scanned — Claude must decide' in md
+    cat = pc.load_catalogue()
+    for cid in data['not_scanned']:
+        assert f"**{cid}** ({cat[cid]['guideline']}): {cat[cid]['what']}" in md
+    decisions = {cid: {'decision': ['ok', 'fixed', 'n/a'][i % 3], 'why': 'Reviewed with evidence.'}
+                 for i, cid in enumerate(data['not_scanned'])}
+    (kit / 'precheck-decisions.yaml').write_text(yaml.safe_dump(decisions))
+    _, data = run_json(root, capsys, '--kit', kit)
+    assert data['summary']['NOT SCANNED'] == 0 and not data['undecided']
+    assert data['decisions'] == decisions
+    assert 'Readiness: incomplete' not in (kit / 'PRECHECK.md').read_text()
+    # An unsupported decision or missing evidence cannot close a check.
+    for value in ({'decision': 'skip', 'why': 'looked'}, {'decision': 'ok', 'why': ''}, 'ok'):
+        decisions[next(iter(decisions))] = value
+        (kit / 'precheck-decisions.yaml').write_text(yaml.safe_dump(decisions))
+        _, data = run_json(root, capsys, '--kit', kit)
+        assert data['summary']['NOT SCANNED'] == 1
+
+
+def test_unscanned_decisions_control_exit_code():
+    cat = {'MANUAL-01': {'guideline': '2.1', 'what': 'Install the release build.'}}
+    result = pc.Result(cat)
+    assert pc.exit_code(result) == 1
+    result.decisions = {'MANUAL-01': {'decision': 'ok', 'why': 'Installed and checked.'}}
+    assert pc.exit_code(result) == 0
+    result.fail('MANUAL-01', 'Known blocker', severity='BLOCKER')
+    assert pc.exit_code(result) == 2
+
+
+def test_precheck_duo_matches_frozen_rules_and_sdk(tmp_path):
+    import datetime as dt
+    from types import SimpleNamespace
+    root = make_project(tmp_path)
+    kit = make_kit(tmp_path, {})
+    folder = kit / 'screenshots/en-US/iphone-di-medium'
+    folder.mkdir(parents=True)
+    (folder / '01.png').write_bytes(b'x')
+    rules = json.loads((pc.HERE / 'rules.json').read_text())
+    for sid in ('iphone-duo-inner', 'iphone-duo-outer'):
+        rules['screenshots']['slots'][sid]['required_sdk'] = 'iOS 28.1'
+    (kit / 'rules.json').write_text(json.dumps(rules))
+    for sdk, day, expected in [('iOS 28.0', '2027-04-01', None), (None, '2027-04-01', 'WARNING'),
+                               ('iOS 28.1', '2027-03-31', 'WARNING'), ('iOS 28.1', '2027-04-01', 'BLOCKER')]:
+        (kit / 'facts.yaml').write_text(yaml.safe_dump({'build': {'sdk': sdk}}))
+        result = pc.Result(pc.load_catalogue())
+        pc.chk_duo_screens(pc.Project(root, kit), result, SimpleNamespace(today=dt.date.fromisoformat(day)))
+        assert {f['severity'] for f in result.findings} == ({expected} if expected else set())
+        if sdk is None:
+            assert all('SDK is unknown' in f['message'] for f in result.findings)

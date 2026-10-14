@@ -329,13 +329,19 @@ Holder, Admin or App Manager [AL-manage, AL-submit].
   - events with their languages and media.
 - It refuses pages and tests before launch, with a note (and an optional browser check for pages), and leaves
   started tests, items in review and published events alone.
-- `apply KIT --yes` saves drafts only: nothing customers see changes.
+- `apply KIT --yes` saves drafts only: nothing customers see changes. It never changes a page's visibility; that
+  is `release KIT --cpp-visibility ID=on|off --yes` (ID = the page's id in growth.yaml), its own yes.
+- Inside a draft, apply **replaces** media and keywords: it deletes replaced or extra Asset Library placements
+  (`DELETE /v1/appAssetLibraryPlacements/{id}`) and removed keywords
+  (`DELETE /v1/appCustomProductPageLocalizations/{id}/relationships/searchKeywords`). It never deletes a page,
+  test, treatment or event.
+- Results: `asc_reports.py growth KIT` (references/analytics-reports.md). Test results aren't in the API.
 - `submit KIT --growth IDS --yes` sends them to App Review:
   - after launch, on their own;
   - before launch (events only), together with the first version.
 - `release KIT --start-test ID --yes` starts an approved test. It is a separate yes, because it can't be undone.
 - Never automated:
-  - deleting anything;
+  - deleting a page, test, treatment or event;
   - applying a winning treatment (`appStoreVersionPromotions`);
   - promo codes and offer codes;
   - Publish of a live header swap;
