@@ -348,8 +348,9 @@ class Client:
     def patch(self, path, json):
         return self.request("PATCH", path, json=json)
 
-    def delete(self, path):
-        return self.request("DELETE", path)
+    def delete(self, path, json=None):
+        """DELETE; relationship deletes (e.g. .../relationships/searchKeywords) carry a linkage body."""
+        return self.request("DELETE", path, json=json)
 
     def upload_operations(self, ops, file_path):
         """PUT each upload operation's slice of the file (no JWT; Apple's upload URLs carry their own auth)."""

@@ -1,0 +1,47 @@
+# KIT/growth.yaml: custom product pages, product page optimization tests and in-app events.
+# Read references/growth-marketing.md first. asc_sync.py plan KIT --only growth turns this into a plan; nothing is
+# sent without the owner's yes, nothing is submitted without a second yes, and a test starts only on a third.
+# Before the app's first version is approved, only in-app events are planned (they go in with the first version).
+# Images live under KIT/growth/<id>/ (see scripts/growth.py); validate_kit.py checks them.
+
+custom_product_pages:            # up to 70 per app; one per audience or keyword theme
+  - id: free-up-storage          # folder: growth/free-up-storage/screenshots/<locale>/<slot>/, creative/<locale>/
+    name: Free up storage        # internal name, shown only in App Store Connect; must be unique
+    deep_link: https://example.com/open/storage   # optional (iOS 18+); approved with the page; no URL shorteners
+    # visible: true              # optional; Apple makes new pages visible
+    audience: people who searched for storage or full-phone fixes   # a note for you; not sent
+    locales:
+      en-US:
+        promotional_text: Clear gigabytes of old photos in minutes.  # 170 characters
+        keywords: [storage, cleaner]   # optional; only keywords of the latest approved version, one page per combination
+
+experiments:                     # product page optimization: one test at a time, up to 90 days, live apps only
+  - id: first-shot-in-motion     # folders: growth/first-shot-in-motion/<treatment id>/screenshots|creative/...
+    name: First screenshot in motion
+    traffic_proportion: 30       # % of visitors who see a treatment, split evenly (30 % / 3 treatments = 10 % each)
+    hypothesis: A mid-swipe first screenshot explains the app faster than the resting screen.   # a note; not sent
+    # locales: [en-US]           # optional; default: every kit language. Visitors in other languages aren't tested
+    treatments:                  # 1 to 3
+      - id: mid-swipe
+        name: Mid-swipe first
+        # app_icon_name: AppIcon-Night   # optional: an alternate icon that is already in the live binary
+
+in_app_events:                   # real, timed happenings only: no price promotions, no "daily rewards"
+  - id: spring-clean-week        # media: growth/spring-clean-week/media/<locale>/card.png (16:9) and details.png (9:16)
+    reference_name: Spring clean week 2027   # 64 characters, unique, internal
+    badge: challenge             # challenge, competition, live event, major update, new season, premiere, special event
+    purpose: attract new users   # appropriate for all users, attract new users, keep active users informed,
+                                 # bring back lapsed users
+    priority: normal             # normal or high
+    deep_link: https://example.com/open/spring-clean   # optional
+    # purchase_requirement: ...  # only when the event itself costs extra (UNCONFIRMED API values; see the reference)
+    schedule:                    # at least 15 minutes, at most 31 days; publish at most 14 days before the start
+      - territories: [USA, GBR, DEU]
+        publish_start: 2027-03-01T17:00:00Z
+        event_start: 2027-03-08T17:00:00Z
+        event_end: 2027-03-15T17:00:00Z
+    locales:
+      en-US:
+        name: Spring Clean Week                  # 30 characters, title case, the event's real name
+        short_description: Clear a thousand photos in seven days.        # 50 characters
+        long_description: Swipe through your library each day and see how much space you win back by Sunday.  # 120

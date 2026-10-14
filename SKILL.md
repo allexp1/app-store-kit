@@ -1,6 +1,6 @@
 ---
 name: app-store-kit
-description: "Takes an iOS/iPadOS app from code to the App Store and keeps it updated, hands-off. It checks the code against Apple's current review rules, writes the product page in every language the owner wants, makes screenshots per language and device, archives and uploads the build, and fills App Store Connect itself through the official API (texts, languages, screenshots, age rating, accessibility, review details, build, submit, release), using Chrome only where the API can't reach. It works step by step and stops for the person only where Apple requires them (sign-in, agreements, tax, banking, DSA): it brings the browser to that button and waits. Upload, submit and release each need a yes. Use for App Store submission, updates or new versions, adding languages, App Store Connect, screenshots, metadata, ASO, privacy labels, age rating, review notes, or 'will Apple accept my app'."
+description: "Takes an iOS/iPadOS app from code to the App Store and keeps it updated, hands-off. It checks the code against Apple's current review rules, writes the product page in every language the owner wants, makes screenshots per language and device, archives and uploads the build, and fills App Store Connect itself through the official API (texts, languages, screenshots, age rating, accessibility, review details, build, submit, release), using Chrome only where the API can't reach. It works step by step and stops for the person only where Apple requires them (sign-in, agreements, tax, banking, DSA): it brings the browser to that button and waits. Upload, submit and release each need a yes. Use for App Store submission, updates or new versions, adding languages, App Store Connect, screenshots, metadata, ASO, privacy labels, age rating, review notes, growth and marketing (custom product pages, product page optimization tests, in-app events), or 'will Apple accept my app'."
 ---
 
 # App Store kit
@@ -19,6 +19,7 @@ The owner says one sentence. Work out the journey, show the status board, and go
 | "Add German and Japanese" | **Languages** | Adapt the store texts → localized screenshots → Connect sync for those languages 🛑 |
 | "What's the status?", "did Apple approve it?" | **Status** | `asc_sync.py status KIT` and a plain summary |
 | "I'll type it myself" | **Guide mode** | the field-by-field guide (below) |
+| "Market it", "custom product pages", "A/B test the screenshots", "an in-app event" | **Growth** | `growth.yaml` → growth screenshots → `plan --only growth` 🛑 → submit 🛑 (→ start the test 🛑); see "Growth and marketing" |
 
 Rules of the road:
 - **Ask only what the repo and the account can't tell you,** in one short batch: the languages, approval of the
@@ -86,6 +87,10 @@ kit/previews/<locale>/<slot>/*.mov|mp4      optional; a preview plays BEFORE the
 kit/creative/<locale>/universal.png         header + search-results asset, 5244×2950 (iOS/iPadOS 27+); header.* / search.*
                                             override one placement (references/creative-assets.md)
 kit/iap/<product_id>/promo.png              optional (only if promoted)
+kit/growth.yaml                custom product pages, product page optimization tests, in-app events (templates/growth.example.yaml)
+kit/growth/<page>/screenshots|previews|creative/<locale>/...   a custom product page's media (same layout as above)
+kit/growth/<test>/<treatment>/screenshots|creative/<locale>/... a test treatment's media
+kit/growth/<event>/media/<locale>/card.* details.*             in-app event card (16:9) and details page (9:16)
 kit/samples/                   generated sample library + manifest.yaml
 kit/READINESS.md   kit/ACCOUNT.md   kit/SUBMIT.md
 kit/CONNECT-GUIDE.md  kit/connect-guide.html          field-by-field guide (no private data; safe to commit)
@@ -175,9 +180,8 @@ Always strip alpha afterwards. Keep the other renderer as a cross-check.
   in Apple's art safe area, rendered with `scripts/render_creative.py` from `templates/creative-universal.html`;
 - the website App Store badge (Apple's artwork, black by default, at least 40 px high) and the Smart App Banner once the app has an ID;
 - a press zip;
-- after launch, optionally: custom product pages (up to 70, each with keywords and a deep link) and product page
-  optimization (one test at a time, up to 3 treatments, 90 days; alternate icons must be in the binary). See
-  `references/apple-specs.md`.
+- after launch, optionally: custom product pages, product page optimization and in-app events. See "Growth and
+  marketing" below and `references/growth-marketing.md`.
 
 Generated imagery follows `references/image-generation.md`, with a provenance manifest.
 
@@ -233,6 +237,26 @@ Generated imagery follows `references/image-generation.md`, with a provenance ma
   - a language without its own folder uses the primary screenshots.
 - In-app purchase names and descriptions per language: `metadata.<locale>.yaml` › `iap:` (30 / 45 characters).
 - The Connect sync places every language: the texts, its own screenshots and the in-app purchase texts.
+
+## Growth and marketing (after launch, or prepared before)
+
+App Store Connect › Growth & Marketing: custom product pages, product page optimization, in-app events, Asset
+Library, promo codes, Game Center. Facts, limits, sources and API shapes: `references/growth-marketing.md`.
+
+- **Before the first approval:** prepare `KIT/growth.yaml` and its media now, but only **in-app events** can be sent;
+  they go in the first version's submission (`asc_sync.py submit KIT --growth <id> --yes`). Custom product pages
+  wait for launch (Apple's pages disagree on whether they can ride along; the plan adds an optional browser check),
+  and product page optimization needs a live app. The guide marks these ⏸ after launch.
+- **Choose with the recipe** (reference §7): one custom product page per audience or keyword theme, with its own first
+  screenshot, header, promotional text and 2–5 keywords from the approved version; one test variable at a time
+  (first screenshot, then header, then icon); an in-app event only for a real, dated happening; never prices,
+  "#1" claims or daily-reward events.
+- **Flow:** `python3 scripts/growth.py KIT` (checks the file) → `validate_kit.py` (growth images) →
+  `asc_sync.py plan KIT --only growth` → one yes → `apply KIT --only growth --yes` (drafts only) →
+  `submit KIT --growth IDS --yes` (to App Review; after launch without a version) → for a test, once approved,
+  `release KIT --start-test ID --yes` (a separate yes: a started test can't be changed or restarted).
+- **Browser or person only:** promo codes (no API), offer codes, applying a winning treatment, Publish of a header
+  swap on the live page, Game Center. The kit never deletes pages, tests or events.
 
 ## Updates of a live app
 
@@ -364,7 +388,8 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/precheck.py` | `PROJECT [--kit KIT] [--json] [--strict] [--check-urls]`: the code against Apple's rules (`references/precheck-rules.md`) → `KIT/PRECHECK.md`; exit 2 blocker, 1 likely rejection, 0 otherwise; Semi checks go to "For Claude to judge" |
 | `scripts/status_board.py` | `KIT [--print]` → `KIT/STATUS.md` from progress, PRECHECK.md, connect-plan.json and connect-live.json; the "Next" line |
 | `scripts/asc_api.py` | App Store Connect API client: ES256 JWT (cryptography or the openssl CLI), paging, 429 retry, upload operations, dry-run; key from args, `ASC_*` env, `connect.yaml api:` or altool's folders |
-| `scripts/asc_sync.py` | `status\|plan\|apply\|submit\|release KIT [--locale L] [--only text,media,iap,review,age,accessibility,build,release] [--dry-run] [--yes] [--pause\|--resume]`; apply/submit/release exit 2 without `--yes` |
+| `scripts/asc_sync.py` | `status\|plan\|apply\|submit\|release KIT [--locale L] [--only text,media,iap,review,age,accessibility,build,release,growth] [--dry-run] [--yes] [--pause\|--resume]`; `submit --growth IDS`, `release --start-test ID`; apply/submit/release exit 2 without `--yes` |
+| `scripts/growth.py` | `KIT`: reads and checks `growth.yaml` (limits, enums, dates) and lists pages, tests and events; exit 1 on a problem |
 | `scripts/locales.py` | `list`, `check KIT [--project DIR]` (store languages vs the app's own), `scaffold KIT LOCALE...` |
 | `scripts/whats_new.py` | `PROJECT_GIT_DIR [--since REF] [--kit KIT] [--json]` drafts What's New from git; `--record KIT --version X` writes release-history.yaml |
 | `scripts/release.py` | `bump [--patch\|--minor\|--major\|--version X] [--build auto\|N] [--dry-run]`, `archive --scheme S [--xcodegen]`, `upload ARCHIVE --kit KIT --yes` (exit 3 without `--yes`), `wait` |
@@ -389,4 +414,6 @@ Run the tests with `python3 -m pytest` in this folder.
 - `references/localization-and-updates.md`: Apple's 50 store locales, byte limits, fallbacks, What's New and update rules
 - `references/creative-assets.md`: header and search-results assets: sizes, Apple's Figma safe areas, rules, the
   universal asset, the API (category CREATIVE_ASSETS, DEFAULT_PROFILE)
+- `references/growth-marketing.md`: custom product pages, product page optimization, in-app events, Asset Library,
+  promo and offer codes: limits, before/after launch, review, API shapes, the recipe, what's not allowed
 - `references/person-and-browser-steps.md`: the ✋ routine (drive Chrome to the button, outline it, wait for "done") and the 🌐 steps the API can't do

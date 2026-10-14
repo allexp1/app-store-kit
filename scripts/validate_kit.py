@@ -8,6 +8,8 @@ Kit layout (all optional except what you want checked):
   KIT/iap/<product_id>/promo.png              in-app purchase promotional image
   KIT/creative/<locale>/universal|header|search.png|jpg|mp4|mov   header and search-results assets (iOS 27+)
   KIT/frames.yaml                             captions, colours (house-rule checks)
+  KIT/growth/**/screenshots|previews|creative/<locale>/...   custom product pages and test treatments (growth.yaml)
+  KIT/growth/<event>/media/<locale>/card|details.png|mp4     in-app event card (16:9) and details page (9:16)
 
 Usage:
   validate_kit.py KIT [--platforms iphone,ipad] [--fix] [--report OUT.md] [--rules R] [--today YYYY-MM-DD]
@@ -279,8 +281,8 @@ def creative_image_sizes(kind, spec, actual):
     return sizes
 
 
-def check_creative(kit, rules, rep, fix):
-    root = kit / "creative"
+def check_creative(kit, rules, rep, fix, root=None, prefix=""):
+    root = root or kit / "creative"
     if not root.exists():
         return
     cr = rules.get("creative_assets") or CREATIVE_DEFAULT
@@ -288,7 +290,7 @@ def check_creative(kit, rules, rep, fix):
         files = [f for f in sorted(loc.iterdir()) if f.is_file() and not f.name.startswith(".")]
         for f in files:
             kind = f.stem.lower()
-            scope = f"{loc.name}/creative {kind}"
+            scope = f"{prefix}{loc.name}/creative {kind}"
             if kind not in ("universal", "header", "search"):
                 if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".mp4", ".mov", ".m4v"):
                     rep.warn(scope, f"{f.name}: name it universal, header or search; it is not uploaded")
@@ -306,6 +308,94 @@ def check_creative(kit, rules, rep, fix):
             img_rules = {**rules["screenshots"], "formats": formats, "extensions": None}
             check_image(f, creative_image_sizes(kind, spec, actual), img_rules, rep, scope, fix,
                         f"{kind} creative asset")
+
+
+# In-app event media (App Store Connect Help › In-app event media and audio specifications, read 2026-10-14):
+# card 16:9 from 1920x1080 to 3840x2160, details page 9:16 from 1080x1920 to 2160x3840; JPEG or PNG; video
+# .mov/.m4v/.mp4 at 30 or 60 fps, 15 to 30 s (creative-assets specifications), 500 MB at most.
+EVENT_MEDIA = {"card": {"ratio": (16, 9), "min": (1920, 1080), "max": (3840, 2160)},
+               "details": {"ratio": (9, 16), "min": (1080, 1920), "max": (2160, 3840)}}
+EVENT_VIDEO = {"fps": [30, 60], "seconds": [15, 30]}
+
+
+def check_growth(kit, rules, rep, fix):
+    """Custom product page and treatment screenshots (the slot sizes, 1-10 per set; no required sets: a missing
+    language or size falls back to the default product page), their creative assets, and event media."""
+    root = kit / "growth"
+    if not root.exists():
+        return
+    sr, slots = rules["screenshots"], rules["screenshots"]["slots"]
+    for shots in sorted(root.rglob("screenshots")):
+        for loc in sorted(p for p in shots.iterdir() if p.is_dir()):
+            for sd in sorted(p for p in loc.iterdir() if p.is_dir()):
+                scope = sd.relative_to(kit).as_posix()
+                if sd.name not in slots:
+                    rep.err(scope, f"unknown slot '{sd.name}'; known: {', '.join(slots)}")
+                    continue
+                files = images_in(sd)
+                if not (sr["min_per_set"] <= len(files) <= sr["max_per_set"]):
+                    rep.err(scope, f"{len(files)} screenshot(s); Apple allows {sr['min_per_set']}-{sr['max_per_set']}")
+                for f in files:
+                    check_image(f, accepted_sizes(slots[sd.name]), sr, rep, scope, fix, slots[sd.name]["label"])
+    for creative in sorted(root.rglob("creative")):
+        check_creative(kit, rules, rep, fix, creative, creative.parent.relative_to(kit).as_posix() + "/")
+    for media in sorted(root.glob("*/media")):
+        for loc in sorted(p for p in media.iterdir() if p.is_dir()):
+            for f in sorted(x for x in loc.iterdir() if x.is_file() and not x.name.startswith(".")):
+                scope = f.relative_to(kit).as_posix()
+                spec = EVENT_MEDIA.get(f.stem.lower())
+                if not spec:
+                    rep.warn(scope, "name it card or details; it is not uploaded")
+                elif f.suffix.lower() in (".mp4", ".mov", ".m4v"):
+                    check_event_video(f, spec, rep, scope)
+                else:
+                    check_event_image(f, spec, rules, rep, scope, fix)
+
+
+def _fits(w, h, spec):
+    rw, rh = spec["ratio"]
+    return w * rh == h * rw and spec["min"][0] <= w <= spec["max"][0]
+
+
+def check_event_image(f, spec, rules, rep, scope, fix):
+    try:
+        with Image.open(f) as im:
+            w, h = im.size
+    except Exception:
+        w, h = 0, 0
+    sizes = {(w, h)} if _fits(w, h, spec) else {spec["min"]}
+    check_image(f, sizes, {**rules["screenshots"], "formats": ["PNG", "JPEG"], "extensions": None}, rep, scope, fix,
+                f"in-app event {f.stem.lower()} ({spec['ratio'][0]}:{spec['ratio'][1]}, {spec['min'][0]}x{spec['min'][1]} "
+                f"to {spec['max'][0]}x{spec['max'][1]})")
+
+
+def check_event_video(f, spec, rep, scope):
+    try:
+        import preview_check
+    except ImportError:  # pragma: no cover
+        sys.path.insert(0, str(HERE)); import preview_check
+    try:
+        probe = preview_check.ffprobe(f)
+    except Exception as e:
+        rep.err(scope, f"ffprobe failed ({e})"); return
+    v = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), None)
+    if not v:
+        rep.err(scope, "no video stream"); return
+    w, h = int(v.get("width", 0)), int(v.get("height", 0))
+    dur = float(probe.get("format", {}).get("duration") or 0)
+    fps = preview_check._rate(v.get("avg_frame_rate")) or 0
+    bad = []
+    if not _fits(w, h, spec):
+        bad.append(f"{w}x{h}, need {spec['ratio'][0]}:{spec['ratio'][1]} from {spec['min'][0]}x{spec['min'][1]} to "
+                   f"{spec['max'][0]}x{spec['max'][1]}")
+    if not EVENT_VIDEO["seconds"][0] <= dur <= EVENT_VIDEO["seconds"][1]:
+        bad.append(f"{dur:.1f} s, need 15 to 30 s")
+    if not any(abs(fps - x) < 0.5 for x in EVENT_VIDEO["fps"]):
+        bad.append(f"{fps:.2f} fps, need 30 or 60")
+    for b in bad:
+        rep.err(scope, b)
+    if not bad:
+        rep.ok(scope, f"{w}x{h} {dur:.1f} s")
 
 
 def check_creative_video(f, kind, vspec, rep, scope):
@@ -459,6 +549,7 @@ def main(argv=None):
     check_previews(kit, rules, rep)
     check_iap(kit, rules, rep, a.fix)
     check_creative(kit, rules, rep, a.fix)
+    check_growth(kit, rules, rep, a.fix)
     check_frames(kit, rules, rep)
     rep.print()
     if a.report:

@@ -23,7 +23,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import connect_guide as cg  # noqa: E402
 
-DONE, PERSON, YES, BROWSER, TODO = "✅", "✋", "🛑", "🌐", "⬜"
+DONE, PERSON, YES, BROWSER, TODO, LATER = "✅", "✋", "🛑", "🌐", "⬜", "⏸"
 # Steps the API can't do; Claude does them in Chrome (references/person-and-browser-steps.md).
 BROWSER_KEYS = ("new-app/", "privacy/", "pricing/", "version/in-app-purchases",
                 "version/phased-release-and-rating-reset")
@@ -49,6 +49,8 @@ def precheck_counts(kit):
 def mark(step, status):
     if status.startswith("done") or status == "skipped":
         return DONE
+    if getattr(step, "after_launch", False):
+        return LATER   # growth: Apple allows it only once a version is live
     if step.guide_only or (step.key and step.key.startswith(PERSON_KEYS)):
         return PERSON
     if step.approval:
@@ -77,9 +79,10 @@ def guide_steps(kit):
 
 def render(kit):
     L = ["# App Store status", "",
-         f"{DONE} done · {PERSON} your turn · {YES} needs your yes · {BROWSER} Claude in Chrome · {TODO} to do", ""]
+         f"{DONE} done · {PERSON} your turn · {YES} needs your yes · {BROWSER} Claude in Chrome · {TODO} to do · "
+         f"{LATER} after launch", ""]
     sections = guide_steps(kit)
-    open_rows = [r for s in sections for r in s["rows"] if r["mark"] != DONE]
+    open_rows = [r for s in sections for r in s["rows"] if r["mark"] not in (DONE, LATER)]
     total = sum(len(s["rows"]) for s in sections)
     nxt = open_rows[0] if open_rows else None
     pc = precheck_counts(kit)
@@ -89,7 +92,9 @@ def render(kit):
         L.append(f"**Next:** {nxt['mark']} {nxt['title']} (`{nxt['key']}`)")
     else:
         L.append("**Next:** nothing open. Every step is done.")
-    L += ["", f"Progress: {total - len(open_rows)} of {total} steps done.", ""]
+    later = sum(r["mark"] == LATER for s in sections for r in s["rows"])
+    L += ["", f"Progress: {total - len(open_rows) - later} of {total - later} steps done."
+          + (f" {later} growth step(s) wait for launch." if later else ""), ""]
 
     L += ["## Code pre-check", ""]
     if pc is None:

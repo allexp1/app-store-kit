@@ -150,8 +150,10 @@ class Field:
 
 
 class Step:
-    def __init__(self, title, fields=None, approval=False, note=None, where=None, key=None, guide_only=False):
+    def __init__(self, title, fields=None, approval=False, note=None, where=None, key=None, guide_only=False,
+                 after_launch=False):
         self.title, self.fields, self.approval, self.note, self.where = title, fields or [], approval, note, where
+        self.after_launch = after_launch  # Apple allows it only once a version is live (growth: pages, tests)
         self.guide_only = guide_only  # agreements, tax, banking, ID: the owner does these; autopilot never does
         self.key = key  # stable progress key; build() fills it in as "<section key>/<slug of title>" when None
         self.status, self.date, self.live, self.progress_note, self.changes = "todo", None, {}, None, []
@@ -658,6 +660,11 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
                  approval=True, note="This puts the app on the App Store for everyone. Only when you decide.")],
                                 key="release"))
 
+    growth = growth_section(kit, app_name, facts, locale)
+    if growth:
+        sections.append(growth[0])
+        problems += [f"growth.yaml: {x}" for x in growth[1]]
+
     for s in sections:
         for st in s.steps:
             for f in st.fields:
@@ -679,6 +686,105 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
          "app_version": app.get("version")}
     apply_progress(g, load_yaml(kit / PROGRESS_FILE), private)
     return g
+
+
+def _folder_files(root):
+    """"slot: n files" for each screenshot/preview slot folder under root (one locale)."""
+    out = []
+    if root.is_dir():
+        for slot in sorted(p for p in root.iterdir() if p.is_dir()):
+            n = sum(1 for f in slot.iterdir() if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".mov", ".mp4", ".m4v"))
+            if n:
+                out.append(f"{slot.name}: {n} file(s)")
+    return out
+
+
+def _media_fields(kit, base, loc):
+    rel = lambda p: p.relative_to(kit).as_posix()  # noqa: E731
+    fields = []
+    for kind in ("screenshots", "previews"):
+        files = _folder_files(base / kind / loc)
+        if files:
+            fields.append(Field(f"App Previews and Screenshots ({loc})", f"{rel(base / kind / loc)}/: "
+                                + "; ".join(files), "choose"))
+    for tab, name in creative_files(base, loc):
+        fields.append(Field(f"Header and Search Results › {tab} ({loc})", f"{rel(base / 'creative' / loc)}/{name}",
+                            "choose"))
+    return fields
+
+
+def growth_section(kit, app_name, facts, locale):
+    """Guide steps for KIT/growth.yaml (references/growth-marketing.md), keyed "growth/<id>". None without the file."""
+    sys.path.insert(0, str(HERE))
+    import growth as gr
+    g = gr.load(kit)
+    if not g["present"]:
+        return None
+    first = bool(facts.get("first_version"))
+    later = " Apple allows this only once the app is live (Ready for Distribution); until then it stays prepared."
+    steps = []
+    for p in g["pages"]:
+        f = [Field("Custom Product Pages › + › Reference Name", p["name"])]
+        if p.get("deep_link"):
+            f.append(Field("Deep Link", p["deep_link"], note="Works on iOS 18 and later once the page is approved."))
+        for loc, v in p["locales"].items():
+            if v.get("promotional_text"):
+                f.append(Field(f"Promotional Text ({loc})", v["promotional_text"],
+                               limit={"max": gr.PROMO_MAX, "unit": "chars"}))
+            if v.get("keywords"):
+                f.append(Field(f"Keywords ({loc})", ", ".join(v["keywords"]), "choose",
+                               note="Pick them from the list: only keywords of the latest approved version."))
+            f += _media_fields(kit, p["dir"], loc)
+        f.append(Field("Add for Review", "only with your yes (asc_sync.py submit KIT --growth " + p["id"] + ")",
+                       "choose"))
+        steps.append(Step(f"Custom product page: {p['name']}", f, key=f"growth/{p['id']}", after_launch=first,
+                          note="Changes to a live page go through Create New Version; the URL stays the same."
+                               + (later if first else "")))
+    for t in g["tests"]:
+        f = [Field("Product Page Optimization › Create Test › Reference Name", t["name"]),
+             Field("Traffic Proportion", f"{t['traffic_proportion']}%", "choose",
+                   note="Split evenly across the treatments.")]
+        for tr in t["treatments"]:
+            f.append(Field("Treatment › Name", tr["name"]))
+            if tr.get("app_icon_name"):
+                f.append(Field(f"{tr['name']} › App Icon", tr["app_icon_name"], "choose",
+                               note="Must already be an alternate icon in the live binary."))
+            for loc in (t["locales"] or [locale]):
+                f += _media_fields(kit, tr["dir"], loc)
+        f.append(Field("Start Test", "only after approval and with your yes (asc_sync.py release KIT --start-test "
+                       + t["id"] + ")", "choose"))
+        steps.append(Step(f"Product page optimization: {t['name']}", f, key=f"growth/{t['id']}", after_launch=first,
+                          note="One test at a time, up to 90 days; a started test can't be changed."
+                               + (later if first else "")))
+    for e in g["events"]:
+        f = [Field("In-App Events › + › Reference Name", e["reference_name"],
+                   limit={"max": gr.EVENT_REF_MAX, "unit": "chars"}),
+             Field("Badge", (e["badge"] or "").replace("_", " ").title(), "choose")]
+        if e.get("purpose"):
+            f.append(Field("Event Purpose", e["purpose"].replace("_", " ").capitalize(), "choose"))
+        f.append(Field("Priority", (e.get("priority") or "NORMAL").title(), "choose"))
+        if e.get("deep_link"):
+            f.append(Field("Deep Link", e["deep_link"]))
+        for s in e["schedules"]:
+            f.append(Field("Schedule", f"{', '.join(s['territories'])}: publish {s.get('publishStart') or 'at start'}, "
+                                       f"{s['eventStart']} to {s['eventEnd']}", "choose"))
+        for loc, row in e["locales"].items():
+            for label, k, mx in (("Event Name", "name", gr.EVENT_NAME_MAX),
+                                 ("Short Description", "shortDescription", gr.EVENT_SHORT_MAX),
+                                 ("Long Description", "longDescription", gr.EVENT_LONG_MAX)):
+                if row.get(k):
+                    f.append(Field(f"{label} ({loc})", row[k], limit={"max": mx, "unit": "chars"}))
+            for ptype, file in gr.event_media(e, loc).items():
+                f.append(Field(f"{'Event Card' if ptype == 'EVENT_CARD_ASSET' else 'Event Details Page'} ({loc})",
+                               file.relative_to(kit).as_posix(), "choose"))
+        f.append(Field("Submit", "only with your yes (asc_sync.py submit KIT --growth " + e["id"] + ")", "choose"))
+        steps.append(Step(f"In-app event: {e['reference_name']}", f, key=f"growth/{e['id']}",
+                          note="Before the first approval the event goes in the same submission as the first version."
+                          if first else "Events can be submitted on their own."))
+    return Section("Growth and marketing", f"Apps › {app_name} › Growth & Marketing", steps, key="growth",
+                   intro="Custom product pages, product page optimization and in-app events "
+                         "(references/growth-marketing.md). Saving them changes nothing customers see; each goes to "
+                         "App Review only with your yes."), g["problems"]
 
 
 # ---------------------------------------------------------------------------------------------------- progress

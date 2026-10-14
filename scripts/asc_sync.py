@@ -9,11 +9,17 @@ Usage:
   asc_sync.py apply   KIT --yes [--only AREAS] [--dry-run]
                                                execute connect-plan.json in a safe order, re-read every change,
                                                write KIT/connect-assets.json and update KIT/connect-progress.yaml
-  asc_sync.py submit  KIT --yes [--dry-run]    reviewSubmissions: create, add the version, submit
+  asc_sync.py submit  KIT --yes [--growth IDS] [--dry-run]
+                                               reviewSubmissions: create, add the version, submit. With --growth,
+                                               also (after launch: only) those growth.yaml items
+  asc_sync.py release KIT --start-test ID --yes
+                                               start an approved product page optimization test
   asc_sync.py release KIT --yes [--pause | --resume] [--dry-run]
                                                release a PENDING_DEVELOPER_RELEASE version, or pause/resume phased release
 
-AREAS (comma list for --only): text, media, iap, review, age, accessibility, build, release.
+AREAS (comma list for --only): text, media, iap, review, age, accessibility, build, release, growth.
+growth reads KIT/growth.yaml (growth.py): custom product pages, product page optimization tests, in-app events;
+it plans nothing that Apple allows only after the first approval (references/growth-marketing.md).
 Creating the version itself always runs: everything else depends on it.
 
 Auth: --key-id / --issuer-id / --key-path, else ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_PATH, else connect.yaml
@@ -42,13 +48,15 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import connect_guide as cg  # noqa: E402
+import growth as gr  # noqa: E402
 from asc_api import ASCError, Client, ConfigError, make_client  # noqa: E402
 
-AREAS = ("text", "media", "iap", "review", "age", "accessibility", "build", "release")
-ORDER = ["version", "text", "age", "build", "release", "review", "accessibility", "iap", "media"]
+AREAS = ("text", "media", "iap", "review", "age", "accessibility", "build", "release", "growth")
+ORDER = ["version", "text", "age", "build", "release", "review", "accessibility", "iap", "media", "growth"]
 AREA_TITLES = {"version": "Version", "text": "Store text", "age": "Age rating", "build": "Build",
                "release": "Release", "review": "App Review information", "accessibility": "Accessibility",
-               "iap": "In-app purchases", "media": "Screenshots and previews"}
+               "iap": "In-app purchases", "media": "Screenshots and previews",
+               "growth": "Growth and marketing (custom product pages, product page optimization, in-app events)"}
 EDITABLE = {"PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY"}
 LIVE_STATES = {"READY_FOR_DISTRIBUTION", "PROCESSING_FOR_DISTRIBUTION", "REPLACED_WITH_NEW_VERSION"}
 PRIVATE = "$private"
@@ -192,11 +200,12 @@ def load_json(p, default=None):
     return json.loads(p.read_text()) if p.exists() else (default if default is not None else {})
 
 
-def local_slots(kit, locale):
-    """{(placementType, displayClass): [(slot folder, file path), ...]} for one locale, plus unmapped slot names."""
+def local_slots(kit, locale, base_dir=None):
+    """{(placementType, displayClass): [(slot folder, file path), ...]} for one locale, plus unmapped slot names.
+    base_dir: where screenshots/ and previews/ live (the kit, or a growth item's folder)."""
     out, unmapped = {}, []
     for base, ptype, exts in (("screenshots", "APP_SCREENSHOT", IMAGE_EXT), ("previews", "APP_PREVIEW", VIDEO_EXT)):
-        root = kit.path / base / locale
+        root = pathlib.Path(base_dir or kit.path) / base / locale
         if not root.is_dir():
             continue
         slots = sorted((p for p in root.iterdir() if p.is_dir()),
@@ -207,15 +216,15 @@ def local_slots(kit, locale):
                 continue
             cls = SLOT_CLASS.get(slot.name)
             if not cls:
-                unmapped.append(f"{base}/{locale}/{slot.name}")
+                unmapped.append(slot.relative_to(kit.path).as_posix())
                 continue
             out.setdefault((ptype, cls), []).extend((slot.name, f) for f in files)
     return out, unmapped
 
 
-def local_creative(kit, locale):
+def local_creative(kit, locale, base_dir=None):
     """{placementType: file path} for one locale's creative assets. A specific file beats "universal"."""
-    root = kit.path / "creative" / locale
+    root = pathlib.Path(base_dir or kit.path) / "creative" / locale
     out = {}
     if not root.is_dir():
         return out
@@ -319,8 +328,9 @@ def creative_groups(refdata):
     return found
 
 
-def read_placements(client, loc_id):
-    data, included = client.get_all(f"/v1/appStoreVersionLocalizations/{loc_id}/placements",
+def read_placements(client, loc_id, parent="appStoreVersionLocalizations"):
+    """Placements on one localization: a version's, or a custom product page's, treatment's or event's."""
+    data, included = client.get_all(f"/v1/{parent}/{loc_id}/placements",
                                     {"sort": "placementGroupPosition", "include": "image,video", "limit": 200},
                                     include_included=True)
     assets = {i["id"]: attrs(i) for i in included if i.get("type") in ("appAssetLibraryImages",
@@ -405,6 +415,8 @@ def read_live(client, kit, areas):
         except ASCError as e:
             live["warnings"].append(f"could not read accessibility declarations: {e}")
             live["accessibility"] = None
+    if "growth" in areas and (kit.path / gr.GROWTH_FILE).exists():
+        live["growth"] = read_growth(client, kit, live)
     if "iap" in areas or "submit" in areas:
         live["iaps"] = {f.get("product_id"): read_iap(client, aid, f.get("product_id"), kit, "iap" in areas)
                         for f in kit.iaps()}
@@ -886,6 +898,467 @@ def plan_creative(P, assets_map):
                            "new": f"{pathlib.Path(f).name} {rows[0]['action']}"}])
 
 
+# ---------------------------------------------------------------------------------------------------- growth
+# Custom product pages, product page optimization and in-app events (references/growth-marketing.md, read
+# 2026-10-14). Kit side: growth.py. Apple's gates:
+#   - a custom product page can be created once the app is Ready for Distribution somewhere (Help: Configure
+#     multiple product page versions); before the first approval it would ride with the first version's submission
+#     (Help: Submit a custom product page). The two pages disagree: the kit waits for launch (UNCONFIRMED);
+#   - a product page optimization test needs the app live on the App Store (Help: Create a test);
+#   - an in-app event can be prepared any time; before the first approval it goes in the same submission as the
+#     first version (Help: Submit an In-App Event).
+CPP_EDITABLE = {"PREPARE_FOR_SUBMISSION", "REJECTED"}
+GROWTH_BUSY = {"READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW"}
+TEST_EDITABLE = {"PREPARE_FOR_SUBMISSION", "REJECTED"}
+TEST_DONE = {"COMPLETED", "STOPPED"}
+EVENT_EDITABLE = {"DRAFT", "REJECTED"}
+GROWTH_TYPES = (HEADER, SEARCH, "EVENT_CARD_ASSET", "EVENT_DETAILS_PAGE_ASSET")
+SINGLE_LABEL = {HEADER: "Header", SEARCH: "Search results", "EVENT_CARD_ASSET": "Event card",
+                "EVENT_DETAILS_PAGE_ASSET": "Event details page"}
+CPP_GATE = ("Apple lets you create a custom product page once the app is Ready for Distribution in at least one "
+            "country or region")
+TEST_GATE = "Apple runs product page optimization tests only for an app that is live on the App Store"
+
+
+def type_info(refdata, types):
+    """{placementType: {"group", "category"}} from appAssetLibraryRefData placementTypes (specMappings and
+    acceptsAssetCategories). Event cards use CREATIVE_ASSETS (asc-api docs, "Placing assets")."""
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            pid = node.get("placementTypeId")
+            if pid in types:
+                cats = node.get("acceptsAssetCategories") or ["CREATIVE_ASSETS"]
+                for m in node.get("specMappings") or []:
+                    if isinstance(m, dict) and m.get("placementGroupId"):
+                        found.setdefault(pid, {"group": m["placementGroupId"], "category": cats[0]})
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(refdata)
+    return found
+
+
+def read_locs(client, path, parent, keywords=False):
+    """{locale: {"obj", "placements", "assets", "keywords"}} for the localizations at path."""
+    out = {}
+    for obj in client.get_all(path, {"limit": 200}):
+        data, assets = read_placements(client, obj["id"], PARENTS[parent][1])
+        e = {"obj": obj, "placements": data, "assets": assets, "keywords": []}
+        if keywords:
+            e["keywords"] = [k["id"] for k in client.get_all(
+                f"/v1/appCustomProductPageLocalizations/{obj['id']}/searchKeywords", {"limit": 200})]
+        out[attrs(obj).get("locale")] = e
+    return out
+
+
+def read_growth(client, kit, live):
+    g = gr.load(kit.path)
+    G = {"kit": g, "pages": {}, "tests": {}, "events": {}, "app_keywords": {}}
+    aid = live["app"]["id"]
+    if g["pages"]:
+        for page in client.get_all(f"/v1/apps/{aid}/appCustomProductPages", {"limit": 200}):
+            G["pages"][attrs(page).get("name")] = {"page": page}
+        for p in g["pages"]:
+            L = G["pages"].get(p["name"])
+            if not L:
+                continue
+            vers = client.get_all(f"/v1/appCustomProductPages/{L['page']['id']}/appCustomProductPageVersions",
+                                  {"limit": 50})
+            L["version"] = next((v for v in vers if attrs(v).get("state") in CPP_EDITABLE), None)
+            L["busy"] = next((v for v in vers if attrs(v).get("state") in GROWTH_BUSY), None)
+            L["approved"] = next((v for v in vers if attrs(v).get("state") in ("APPROVED", "ACCEPTED")), None)
+            src = L["version"] or L["approved"]
+            L["locs"] = read_locs(client, f"/v1/appCustomProductPageVersions/{src['id']}/appCustomProductPageLocalizations",
+                                  "cpp", keywords=True) if src else {}
+        if any(loc["keywords"] for p in g["pages"] for loc in p["locales"].values()):
+            for loc in {l for p in g["pages"] for l in p["locales"]}:
+                try:
+                    G["app_keywords"][loc] = [k["id"] for k in client.get_all(
+                        f"/v1/apps/{aid}/searchKeywords", {"filter[locale]": loc, "filter[platform]": "IOS",
+                                                           "limit": 200})]
+                except ASCError as e:
+                    live["warnings"].append(f"could not read the app's search keywords ({loc}): {e}")
+    if g["tests"]:
+        G["all_tests"] = client.get_all(f"/v1/apps/{aid}/appStoreVersionExperimentsV2", {"limit": 50})
+        for t in g["tests"]:
+            exp = next((x for x in G["all_tests"] if attrs(x).get("name") == t["name"]), None)
+            L = G["tests"][t["id"]] = {"exp": exp, "treatments": {}}
+            if not exp:
+                continue
+            for tr in client.get_all(f"/v2/appStoreVersionExperiments/{exp['id']}/appStoreVersionExperimentTreatments",
+                                     {"limit": 10}):
+                L["treatments"][attrs(tr).get("name")] = {"obj": tr, "locs": read_locs(
+                    client, f"/v1/appStoreVersionExperimentTreatments/{tr['id']}/"
+                            f"appStoreVersionExperimentTreatmentLocalizations", "treatment")}
+    if g["events"]:
+        evs = client.get_all(f"/v1/apps/{aid}/appEvents", {"limit": 200})
+        for e in g["events"]:
+            ev = next((x for x in evs if attrs(x).get("referenceName") == e["reference_name"]), None)
+            G["events"][e["id"]] = {"event": ev, "locs": read_locs(client, f"/v1/appEvents/{ev['id']}/localizations",
+                                                                   "event") if ev else {}}
+    if not live.get("groups"):
+        try:
+            live["groups"] = placement_groups(client.get("/v1/appAssetLibraryRefData",
+                                                         {"filter[placementTypes]": "APP_SCREENSHOT,APP_PREVIEW"}))
+        except ASCError as e:
+            live["warnings"].append(f"could not read appAssetLibraryRefData: {e}")
+            live["groups"] = {}
+    try:
+        G["types"] = type_info(client.get("/v1/appAssetLibraryRefData",
+                                          {"filter[placementTypes]": ",".join(GROWTH_TYPES)}), GROWTH_TYPES)
+    except ASCError as e:
+        live["warnings"].append(f"could not read the creative and event asset ref data: {e}")
+        G["types"] = {}
+    return G
+
+
+def slot_items(P, base, loc, singles, cur, assets_map, owner):
+    """Plan items (dicts, not yet added) that make one localization's placements match the kit's files:
+    screenshot/preview slots under base/screenshots|previews/<loc>/, and one-file placements (singles:
+    {placementType: file}: header, search results, event card, event details)."""
+    kit, live = P.kit, P.live
+    groups, types = live.get("groups") or {}, (live.get("growth") or {}).get("types") or {}
+    placements, live_assets = (cur or {}).get("placements") or [], (cur or {}).get("assets") or {}
+    out = []
+    slots, unmapped = local_slots(kit, loc, base) if base else ({}, [])
+    for u in unmapped:
+        P.warnings.append(f"{u}: no Asset Library display class for this slot; skipped")
+    for (ptype, cls), entries in slots.items():
+        label = "+".join(dict.fromkeys(s for s, _ in entries))
+        group = groups.get(cls)
+        if not group:
+            P.warnings.append(f"{owner} {loc} {label}: no placement group for {cls}; skipped")
+            continue
+        now = group_placements(placements, group, ptype)
+        rows, removes = diff_slot([f for _, f in entries], now, live_assets, assets_map)
+        rel = [{**r, "file": pathlib.Path(r["file"]).relative_to(kit.path).as_posix()} for r in rows]
+        for r in rel:
+            P.media_rows.append((loc, f"{owner} {label}", r["file"], r["action"]))
+        if any(r["action"] != "unchanged" for r in rows) or removes:
+            out.append({"title": f"{owner}: {'previews' if ptype == 'APP_PREVIEW' else 'screenshots'} {label} ({loc})",
+                        "locale": loc, "slot": label, "group": group, "placement_type": ptype, "rows": rel,
+                        "removes": removes, "changes": [{"locale": loc, "field": label, "old": f"{len(now)} live",
+                                                         "new": ", ".join(f"{pathlib.Path(r['file']).name} {r['action']}"
+                                                                          for r in rows)}]})
+    for ptype, f in singles.items():
+        label, info = SINGLE_LABEL[ptype], types.get(ptype)
+        if not info:
+            P.warnings.append(f"{owner} {loc} {label}: no placement group for {ptype}; skipped")
+            continue
+        now = group_placements(placements, info["group"], ptype)
+        rows, removes = diff_slot([f], now, live_assets, assets_map)
+        rel_file = pathlib.Path(f).relative_to(kit.path).as_posix()
+        P.media_rows.append((loc, f"{owner} {label}", rel_file, rows[0]["action"]))
+        if rows[0]["action"] != "unchanged" or removes:
+            out.append({"title": f"{owner}: {label.lower()} ({loc})", "locale": loc, "slot": label.lower(),
+                        "group": info["group"], "placement_type": ptype, "category": info["category"],
+                        "rows": [{**rows[0], "file": rel_file}], "removes": removes,
+                        "changes": [{"locale": loc, "field": label, "old": f"{len(now)} live",
+                                     "new": f"{pathlib.Path(f).name} {rows[0]['action']}"}]})
+    return out
+
+
+def growth_gate(P, kind, x, launched):
+    """True when Apple allows this item now; otherwise a note (and nothing is planned for it)."""
+    if launched:
+        return True
+    why, what = (CPP_GATE, "custom product page") if kind == "cpp" else (TEST_GATE, "product page optimization test")
+    P.notes.append(f"{x['name']} ({what}): "
+                   f"not planned yet. {why}; this app has no approved version. It stays prepared in growth.yaml: "
+                   f"plan again after launch.")
+    if kind == "cpp":
+        P.browser.append({"text": f"Optional check: Apps › Custom Product Pages › + for {x['name']!r}. Apple's two "
+                                  f"Help pages disagree on pages before launch (UNCONFIRMED); if App Store Connect "
+                                  f"offers it, the page goes in the same submission as the first version.",
+                          "progress_key": f"growth/{x['id']}", "done": False})
+    return False
+
+
+def plan_growth(P):
+    kit, live = P.kit, P.live
+    G = live.get("growth")
+    if not G:
+        return
+    g = G["kit"]
+    P.warnings += [f"growth.yaml: {x}" for x in g["problems"]]
+    launched = bool(live.get("live_version"))
+    assets_map = load_json(kit.path / ASSETS_JSON)
+    for p in g["pages"]:
+        if growth_gate(P, "cpp", p, launched):
+            plan_cpp(P, G, p, assets_map)
+    for t in g["tests"]:
+        if growth_gate(P, "test", t, launched):
+            plan_test(P, G, t, assets_map)
+    for e in g["events"]:
+        plan_event(P, G, e, launched, assets_map)
+
+
+def plan_cpp(P, G, p, assets_map):
+    kit, live = P.kit, P.live
+    L = G["pages"].get(p["name"]) or {}
+    if L.get("busy"):
+        P.notes.append(f"Custom product page {p['name']} is {attrs(L['busy']).get('state')}: plan again after review.")
+        return
+    page, ver, live_locs = L.get("page"), L.get("version"), L.get("locs") or {}
+    owner = f"Custom product page {p['name']}"
+    locs, changes, slots = [], [], []
+    order = {x: i for i, x in enumerate(kit.all_locales)}   # the primary language first: it creates the page
+    for loc, want in sorted(p["locales"].items(), key=lambda kv: order.get(kv[0], len(order))):
+        cur = live_locs.get(loc) or {}
+        desired = clean({"promotionalText": want["promotional_text"]})
+        ch = diff(attrs(cur.get("obj")), desired, loc)
+        kw_now, kw_want = cur.get("keywords") or [], want["keywords"]
+        known = (G.get("app_keywords") or {}).get(loc)
+        unknown = [k for k in kw_want if known is not None and k not in known]
+        if unknown:
+            P.warnings.append(f"{owner} {loc}: keyword(s) {', '.join(unknown)} aren't among the app's keywords "
+                              f"for {loc}; Apple only lets a page use keywords of the latest approved version")
+        add = [k for k in kw_want if k not in kw_now and k not in unknown]
+        remove = [k for k in kw_now if kw_want and k not in kw_want]
+        if add or remove:
+            ch.append({"locale": loc, "field": "keywords", "old": ", ".join(kw_now), "new": ", ".join(kw_want)})
+        if ch or not cur:
+            locs.append({"locale": loc, "desired": desired, "keywords_add": add, "keywords_remove": remove})
+            changes += ch or [{"locale": loc, "field": "language", "old": "", "new": "add"}]
+        singles = local_creative(kit, loc, p["dir"])
+        for s in slot_items(P, p["dir"], loc, singles, cur, assets_map, owner):
+            slots.append({**s, "parent_id": cur["obj"]["id"] if (cur and ver) else None})
+    want_page = {"name": p["name"]} | ({"visible": bool(p["visible"])} if p.get("visible") is not None else {})
+    page_ch = diff(attrs(page), want_page) if page else []
+    deep = p.get("deep_link")
+    src = ver or L.get("approved")
+    deep_ch = deep is not None and _s(attrs(src).get("deepLink")) != _s(deep)
+    if deep_ch:
+        changes.append({"locale": None, "field": "deep link", "old": attrs(src).get("deepLink"), "new": deep})
+    new_version = bool(page) and not ver and bool(locs or slots or deep_ch)
+    if not page or page_ch or locs or deep_ch or new_version:
+        changes = ([{"locale": None, "field": "custom product page", "old": "", "new": f"create {p['name']}"}]
+                   if not page else []) + page_ch + \
+                  ([{"locale": None, "field": "version", "old": "approved", "new": "new version"}] if new_version else []) \
+                  + changes
+        P.add("growth", "cpp", f"{owner}", growth_id=p["id"], name=p["name"], page_id=(page or {}).get("id"),
+              version_id=(ver or {}).get("id"), deep_link=deep if deep_ch or not page else None,
+              page_attrs={c["field"]: want_page[c["field"]] for c in page_ch}, locs=locs,
+              template_version_id=(live.get("live_version") or {}).get("id"), changes=changes)
+    for s in slots:
+        P.add("growth", "growth_slot", s.pop("title"), growth_id=p["id"], parent="cpp", owner=p["id"], **s)
+
+
+def plan_test(P, G, t, assets_map):
+    kit = P.kit
+    L = G["tests"].get(t["id"]) or {}
+    exp = L.get("exp")
+    owner = f"Test {t['name']}"
+    other = [x for x in G.get("all_tests") or [] if attrs(x).get("state") not in TEST_DONE
+             and attrs(x).get("name") != t["name"]]
+    if not exp and other:
+        P.notes.append(f"{owner}: another test ({attrs(other[0]).get('name')}, {attrs(other[0]).get('state')}) is "
+                       f"open. Apple runs one at a time: stop or finish it first.")
+        return
+    state = attrs(exp).get("state")
+    if exp and state not in TEST_EDITABLE:
+        P.notes.append(f"{owner} is {state}: a started test can't be changed (Apple). Nothing planned.")
+        return
+    want = {"name": t["name"], "trafficProportion": t["traffic_proportion"]}
+    changes = [] if exp else [{"locale": None, "field": "test", "old": "", "new": f"create {t['name']}"}]
+    changes += diff(attrs(exp), want) if exp else []
+    locales = t["locales"] or kit.locales
+    treats, slots = [], []
+    for tr in t["treatments"]:
+        cur = (L.get("treatments") or {}).get(tr["name"]) or {}
+        tw = clean({"name": tr["name"], "appIconName": tr.get("app_icon_name")})
+        tch = diff(attrs(cur.get("obj")), tw) if cur else [{"locale": None, "field": "treatment", "old": "",
+                                                            "new": f"create {tr['name']}"}]
+        missing = [loc for loc in locales if loc not in (cur.get("locs") or {})]
+        if tch or missing:
+            treats.append({"id": tr["id"], "name": tr["name"], "target_id": (cur.get("obj") or {}).get("id"),
+                           "attributes": tw, "locales": missing})
+            changes += tch + [{"locale": loc, "field": f"{tr['name']} language", "old": "", "new": "add"}
+                              for loc in missing]
+        for loc in locales:
+            lcur = (cur.get("locs") or {}).get(loc)
+            for s in slot_items(P, tr["dir"], loc, local_creative(kit, loc, tr["dir"]), lcur, assets_map,
+                                f"{owner} › {tr['name']}"):
+                slots.append({**s, "owner": f"{t['id']}/{tr['id']}", "parent_id": (lcur or {}).get("obj", {}).get("id")})
+    if changes:
+        P.add("growth", "test", owner, growth_id=t["id"], test_id=(exp or {}).get("id"), attributes=want,
+              treatments=treats, changes=changes)
+    for s in slots:
+        P.add("growth", "growth_slot", s.pop("title"), growth_id=t["id"], parent="treatment", **s)
+    if any(tr.get("app_icon_name") for tr in t["treatments"]):
+        P.notes.append(f"{owner}: an alternate icon must already be in the binary of the live version, and a test "
+                       f"with an alternate icon is reviewed with a new app version (Apple).")
+
+
+def plan_event(P, G, e, launched, assets_map):
+    L = G["events"].get(e["id"]) or {}
+    ev = L.get("event")
+    owner = f"In-app event {e['reference_name']}"
+    state = attrs(ev).get("eventState")
+    if ev and state not in EVENT_EDITABLE:
+        P.notes.append(f"{owner} is {state}: after approval only its dates can change, in the browser. Nothing planned.")
+        return
+    want = clean({"referenceName": e["reference_name"], "badge": e["badge"], "deepLink": e["deep_link"],
+                  "purchaseRequirement": e["purchase_requirement"], "primaryLocale": e["primary_locale"],
+                  "priority": e["priority"], "purpose": e["purpose"]})
+    changes = diff(attrs(ev), want) if ev else [{"locale": None, "field": "in-app event", "old": "",
+                                                 "new": f"create {e['reference_name']}"}]
+    sched_now = attrs(ev).get("territorySchedules") or []
+    norm_s = [{k: (sorted(v) if isinstance(v, list) else _s(v)) for k, v in s.items() if v} for s in e["schedules"]]
+    if [{k: (sorted(v) if isinstance(v, list) else _s(v)) for k, v in s.items() if v} for s in sched_now] != norm_s:
+        want["territorySchedules"] = e["schedules"]
+        changes.append({"locale": None, "field": "schedule", "old": f"{len(sched_now)} schedule(s)",
+                        "new": "; ".join(f"{','.join(s['territories'])} {s['eventStart']} → {s['eventEnd']}"
+                                         for s in e["schedules"])})
+    locs, slots = [], []
+    for loc, row in e["locales"].items():
+        cur = (L.get("locs") or {}).get(loc)
+        desired = clean(row)
+        ch = diff(attrs((cur or {}).get("obj")), desired, loc)
+        if ch:
+            locs.append({"locale": loc, "target_id": (cur or {}).get("obj", {}).get("id"), "desired": desired})
+            changes += ch
+        for s in slot_items(P, None, loc, gr.event_media(e, loc), cur, assets_map, owner):
+            slots.append({**s, "parent_id": (cur or {}).get("obj", {}).get("id")})
+    if changes:
+        P.add("growth", "event", owner, growth_id=e["id"], event_id=(ev or {}).get("id"),
+              attributes={k: want[k] for k in want if not ev or k in {c["field"] for c in changes}
+                          or k == "territorySchedules"}, locs=locs, changes=changes)
+    for s in slots:
+        P.add("growth", "growth_slot", s.pop("title"), growth_id=e["id"], parent="event", owner=e["id"], **s)
+    if not launched:
+        P.notes.append(f"{owner}: the app has no approved version yet, so Apple reviews the event in the same "
+                       f"submission as the first version (`asc_sync.py submit KIT --growth {e['id']} --yes`).")
+
+
+def growth_loc(ctx, parent, owner, locale):
+    return ctx.growth_locs.get((parent, owner, locale))
+
+
+def op_cpp(ctx, it):
+    c, dry = ctx.client, ctx.client.dry_run
+    pid, vid = it.get("page_id"), it.get("version_id")
+    if not pid:
+        first = it["locs"][0] if it["locs"] else {"locale": ctx.kit.primary, "desired": {}}
+        rels = {"app": ref("apps", ctx.app_id),
+                "appCustomProductPageVersions": [ref("appCustomProductPageVersions", "${new-version}")]}
+        if it.get("template_version_id"):
+            rels["appStoreVersionTemplate"] = ref("appStoreVersions", it["template_version_id"])
+        doc = body("appCustomProductPages", {"name": it["name"]}, relationships=rels)
+        doc["included"] = [
+            {"type": "appCustomProductPageVersions", "id": "${new-version}",
+             **({"attributes": {"deepLink": it["deep_link"]}} if it.get("deep_link") else {}),
+             "relationships": {"appCustomProductPageLocalizations": {"data": [
+                 ref("appCustomProductPageLocalizations", "${new-loc}")]}}},
+            {"type": "appCustomProductPageLocalizations", "id": "${new-loc}",
+             "attributes": {"locale": first["locale"], **first["desired"]}}]
+        pid = c.post("/v1/appCustomProductPages", doc)["data"]["id"]
+    elif it.get("page_attrs"):
+        c.patch(f"/v1/appCustomProductPages/{pid}", body("appCustomProductPages", it["page_attrs"], id=pid))
+    if not vid:
+        vers = [] if dry else c.get_all(f"/v1/appCustomProductPages/{pid}/appCustomProductPageVersions", {"limit": 50})
+        v = next((x for x in vers if attrs(x).get("state") in CPP_EDITABLE), None)
+        if v:
+            vid = v["id"]
+        else:  # an approved page changes through a new version (its URL stays the same)
+            vid = c.post("/v1/appCustomProductPageVersions", body(
+                "appCustomProductPageVersions", clean({"deepLink": it.get("deep_link")}) or None,
+                relationships={"appCustomProductPage": ref("appCustomProductPages", pid)}))["data"]["id"]
+    elif it.get("deep_link"):
+        c.patch(f"/v1/appCustomProductPageVersions/{vid}", body("appCustomProductPageVersions",
+                                                                {"deepLink": it["deep_link"]}, id=vid))
+    live = {} if dry else {attrs(x).get("locale"): x for x in c.get_all(
+        f"/v1/appCustomProductPageVersions/{vid}/appCustomProductPageLocalizations", {"limit": 200})}
+    for loc, x in live.items():
+        ctx.growth_locs[("cpp", it["growth_id"], loc)] = x["id"]
+    for L in it["locs"]:
+        cur = live.get(L["locale"])
+        if cur:
+            lid = cur["id"]
+            if L["desired"]:
+                c.patch(f"/v1/appCustomProductPageLocalizations/{lid}",
+                        body("appCustomProductPageLocalizations", L["desired"], id=lid))
+        elif dry and not it.get("page_id") and L is it["locs"][0]:
+            lid = "DRYRUN-loc"
+        else:
+            lid = c.post("/v1/appCustomProductPageLocalizations", body(
+                "appCustomProductPageLocalizations", {"locale": L["locale"], **L["desired"]},
+                relationships={"appCustomProductPageVersion": ref("appCustomProductPageVersions", vid)}))["data"]["id"]
+        ctx.growth_locs[("cpp", it["growth_id"], L["locale"])] = lid
+        verify(ctx, f"/v1/appCustomProductPageLocalizations/{lid}", L["desired"])
+        kw = f"/v1/appCustomProductPageLocalizations/{lid}/relationships/searchKeywords"
+        if L["keywords_add"]:
+            c.post(kw, {"data": [ref("appKeywords", k) for k in L["keywords_add"]]})
+        if L["keywords_remove"]:
+            c.delete(kw, {"data": [ref("appKeywords", k) for k in L["keywords_remove"]]})
+    ctx.record(f"growth/{it['growth_id']}", {"Name": it["name"]}, note="Custom product page saved (not submitted)")
+
+
+def op_test(ctx, it):
+    c = ctx.client
+    eid = it.get("test_id")
+    if not eid:
+        eid = c.post("/v2/appStoreVersionExperiments", body("appStoreVersionExperiments", {
+            **it["attributes"], "platform": "IOS"}, relationships={"app": ref("apps", ctx.app_id)}))["data"]["id"]
+    else:
+        c.patch(f"/v2/appStoreVersionExperiments/{eid}", body("appStoreVersionExperiments", it["attributes"], id=eid))
+    verify(ctx, f"/v2/appStoreVersionExperiments/{eid}", it["attributes"])
+    for tr in it["treatments"]:
+        tid = tr.get("target_id")
+        if tid:
+            c.patch(f"/v1/appStoreVersionExperimentTreatments/{tid}",
+                    body("appStoreVersionExperimentTreatments", tr["attributes"], id=tid))
+        else:
+            tid = c.post("/v1/appStoreVersionExperimentTreatments", body(
+                "appStoreVersionExperimentTreatments", tr["attributes"],
+                relationships={"appStoreVersionExperimentV2": ref("appStoreVersionExperiments", eid)}))["data"]["id"]
+        for loc in tr["locales"]:
+            lid = c.post("/v1/appStoreVersionExperimentTreatmentLocalizations", body(
+                "appStoreVersionExperimentTreatmentLocalizations", {"locale": loc},
+                relationships={"appStoreVersionExperimentTreatment": ref("appStoreVersionExperimentTreatments", tid)})
+            )["data"]["id"]
+            ctx.growth_locs[("treatment", f"{it['growth_id']}/{tr['id']}", loc)] = lid
+    ctx.record(f"growth/{it['growth_id']}", {"Test name": it["attributes"]["name"],
+                                             "Traffic proportion": f"{it['attributes']['trafficProportion']}%"},
+               note="Test saved (not submitted, not started)")
+
+
+def op_event(ctx, it):
+    c = ctx.client
+    eid = it.get("event_id")
+    if not eid:
+        eid = c.post("/v1/appEvents", body("appEvents", it["attributes"],
+                                           relationships={"app": ref("apps", ctx.app_id)}))["data"]["id"]
+    elif it["attributes"]:
+        c.patch(f"/v1/appEvents/{eid}", body("appEvents", it["attributes"], id=eid))
+    verify(ctx, f"/v1/appEvents/{eid}", {k: v for k, v in it["attributes"].items() if k != "territorySchedules"})
+    for L in it["locs"]:
+        lid = L.get("target_id")
+        if lid:
+            c.patch(f"/v1/appEventLocalizations/{lid}", body("appEventLocalizations", L["desired"], id=lid))
+        else:
+            lid = c.post("/v1/appEventLocalizations", body(
+                "appEventLocalizations", {"locale": L["locale"], **L["desired"]},
+                relationships={"appEvent": ref("appEvents", eid)}))["data"]["id"]
+        ctx.growth_locs[("event", it["growth_id"], L["locale"])] = lid
+        verify(ctx, f"/v1/appEventLocalizations/{lid}", L["desired"])
+    ctx.record(f"growth/{it['growth_id']}", {"Reference name": it["attributes"].get("referenceName")},
+               note="In-app event saved as a draft (not submitted)")
+
+
+def op_growth_slot(ctx, it):
+    lid = growth_loc(ctx, it["parent"], it["owner"], it["locale"]) or it.get("parent_id")
+    if not lid:
+        raise SyncError(f"no {it['parent']} localization for {it['locale']} (did its page, test or event item fail?)")
+    done = place_slot(ctx, it, it["parent"], lid)
+    if done:
+        ctx.record(f"growth/{it['growth_id']}", note=f"{it['locale']} {it['slot']}: {len(done)} file(s) placed")
+
+
 def iap_review_file(kit, pid):
     c = next((i for i in kit.conn.get("iap") or [] if i.get("product_id") == pid), {})
     f = next((i for i in kit.iaps() if i.get("product_id") == pid), {})
@@ -1020,7 +1493,7 @@ def build_plan(kit, live, areas):
     plan_version(P)
     for area, fn in (("text", plan_text), ("age", plan_age), ("build", plan_build), ("release", plan_release),
                      ("review", plan_review), ("accessibility", plan_accessibility), ("iap", plan_iap),
-                     ("media", plan_media)):
+                     ("media", plan_media), ("growth", plan_growth)):
         if area in areas:
             fn(P)
     person_and_browser_steps(P)
@@ -1116,6 +1589,7 @@ class Ctx:
         self._vlocs = None
         self._library = None
         self.creative_uploads = {}
+        self.growth_locs = {}   # (parent kind, growth id, locale) → localization id made or found during apply
 
     def need_version(self):
         if not self.version_id:
@@ -1378,18 +1852,40 @@ def upload_library_asset(ctx, path, video=False, category="APP_SCREENSHOTS_AND_P
     return aid
 
 
+# Placement parents: the localization a placement hangs on (asc-api.md §4a: exactly one target per placement).
+PARENTS = {"version": ("appStoreVersionLocalization", "appStoreVersionLocalizations"),
+           "cpp": ("appCustomProductPageLocalization", "appCustomProductPageLocalizations"),
+           "treatment": ("appStoreVersionExperimentTreatmentLocalization",
+                         "appStoreVersionExperimentTreatmentLocalizations"),
+           "event": ("appEventLocalization", "appEventLocalizations")}
+
+
 def op_media_slot(ctx, it):
-    kit = ctx.kit
     loc = ctx.version_loc(it["locale"])
-    data, live_assets = read_placements(ctx.client, loc["id"]) if not str(loc["id"]).startswith("DRYRUN") else ([], {})
+    done = place_slot(ctx, it, "version", loc["id"])
+    if done and it["locale"] == ctx.kit.primary:
+        if it.get("category") == "CREATIVE_ASSETS":
+            ctx.record("version/header-and-search-results", note=f"{it['slot']}: {done[0]} placed")
+        else:
+            ctx.record("version/app-previews-and-screenshots", note=f"{it['slot']}: {len(done)} files placed in order")
+
+
+def place_slot(ctx, it, parent, parent_id):
+    """Make one placement group on one localization hold exactly the plan's files, in order: delete replaced or
+    surplus placements, upload new files to the Asset Library, place them, order the group, re-read.
+    Returns the placed file names (empty when nothing changed)."""
+    kit = ctx.kit
+    rel_name, parent_type = PARENTS[parent]
+    dry = str(parent_id).startswith("DRYRUN")
+    data, live_assets = read_placements(ctx.client, parent_id, parent_type) if not dry else ([], {})
     current = group_placements(data, it["group"], it["placement_type"])
     files = [kit.path / r["file"] for r in it["rows"]]
     rows, removes = diff_slot(files, current, live_assets, ctx.assets)
     if all(r["action"] == "unchanged" for r in rows) and not removes:
-        return
+        return []
     category = it.get("category") or "APP_SCREENSHOTS_AND_PREVIEWS"
-    video = it["placement_type"] == "APP_PREVIEW" or (category == "CREATIVE_ASSETS"
-                                                      and files[0].suffix.lower() in VIDEO_EXT)
+    single = category == "CREATIVE_ASSETS"   # one placement per group (maxCount 1): uploaded once, never ordered
+    video = it["placement_type"] == "APP_PREVIEW" or (single and files[0].suffix.lower() in VIDEO_EXT)
     for r in removes + [r for r in rows if r["action"] == "replace"]:
         ctx.client.delete(f"/v1/appAssetLibraryPlacements/{r['placement_id']}")
     ordered = []
@@ -1399,36 +1895,32 @@ def op_media_slot(ctx, it):
             continue
         path = pathlib.Path(r["file"])
         # A universal creative asset is uploaded once and placed as both header and search results.
-        aid = ctx.creative_uploads.get(r["sha256"]) if category == "CREATIVE_ASSETS" else None
+        aid = ctx.creative_uploads.get(r["sha256"]) if single else None
         if not aid:
             aid = upload_library_asset(ctx, path, video, category)
-            if category == "CREATIVE_ASSETS":
+            if single:
                 ctx.creative_uploads[r["sha256"]] = aid
         p = ctx.client.post("/v1/appAssetLibraryPlacements", body(
             "appAssetLibraryPlacements", {"placementType": it["placement_type"], "placementGroup": it["group"]},
             relationships={("video" if video else "image"): ref("appAssetLibraryVideos" if video
                                                                 else "appAssetLibraryImages", aid),
-                           "appStoreVersionLocalization": ref("appStoreVersionLocalizations", loc["id"])}))
+                           rel_name: ref(parent_type, parent_id)}))
         ordered.append(p["data"]["id"])
         ctx.assets["assets"][aid] = {"sha256": r["sha256"], "file": path.relative_to(kit.path).as_posix(),
                                      "fileSize": r["size"], "locale": it["locale"], "group": it["group"]}
-    if category == "CREATIVE_ASSETS":
-        # One placement per group (maxCount 1): nothing to order.
-        if it["locale"] == kit.primary:
-            ctx.record("version/header-and-search-results",
-                       note=f"{it['slot']}: {pathlib.Path(rows[0]['file']).name} placed")
-        return
+    names = [pathlib.Path(r["file"]).name for r in rows]
+    if single or parent == "event":
+        return names
     ctx.client.post("/v1/appAssetLibraryPlacementOrderingRequests", body(
         "appAssetLibraryPlacementOrderingRequests", {"placementGroup": it["group"]},
         relationships={"orderedPlacements": [ref("appAssetLibraryPlacements", x) for x in ordered],
-                       "appStoreVersionLocalization": ref("appStoreVersionLocalizations", loc["id"])}))
+                       rel_name: ref(parent_type, parent_id)}))
     if not ctx.client.dry_run:
-        data, _ = read_placements(ctx.client, loc["id"])
+        data, _ = read_placements(ctx.client, parent_id, parent_type)
         got = [p["id"] for p in group_placements(data, it["group"], it["placement_type"])]
         if got != ordered:
             raise SyncError(f"re-read of {it['slot']} ({it['locale']}) shows {len(got)} placements in another order")
-    if it["locale"] == kit.primary:
-        ctx.record("version/app-previews-and-screenshots", note=f"{it['slot']}: {len(rows)} files placed in order")
+    return names
 
 
 def op_iap(ctx, it):
@@ -1486,7 +1978,7 @@ OPS = {"create_version": op_create_version, "version_attrs": op_version_attrs, "
        "appinfo_loc": op_appinfo_loc, "categories": op_categories, "content_rights": op_content_rights,
        "version_loc": op_version_loc, "review_detail": op_review_detail, "age_rating": op_age_rating,
        "accessibility": op_accessibility, "phased_release": op_phased_release, "media_slot": op_media_slot,
-       "iap": op_iap}
+       "iap": op_iap, "cpp": op_cpp, "test": op_test, "event": op_event, "growth_slot": op_growth_slot}
 
 
 def run_apply(ctx, only=None, log=print):
@@ -1649,12 +2141,60 @@ def draft_item_kinds(client, submission_id):
     return kinds
 
 
+def growth_review_items(client, kit, app_id, ids, first):
+    """[(relationship, type, id, label)] for growth ids (growth.yaml) that are ready to submit, or raises SyncError.
+    Before the first approval only in-app events (and custom product pages, if Apple let one be made) can go, and
+    then only together with the first version."""
+    g = gr.load(kit.path)
+    pages, tests, events = ({x["id"]: x for x in g[k]} for k in ("pages", "tests", "events"))
+    out = []
+    for gid in ids:
+        if gid in pages:
+            page = next((x for x in client.get_all(f"/v1/apps/{app_id}/appCustomProductPages", {"limit": 200})
+                         if attrs(x).get("name") == pages[gid]["name"]), None)
+            vers = client.get_all(f"/v1/appCustomProductPages/{page['id']}/appCustomProductPageVersions",
+                                  {"limit": 50}) if page else []
+            v = next((x for x in vers if attrs(x).get("state") in CPP_EDITABLE), None)
+            if not v:
+                raise SyncError(f"{gid}: no custom product page version waiting to be submitted (apply the plan first)")
+            out.append(("appCustomProductPageVersion", "appCustomProductPageVersions", v["id"],
+                        f"custom product page {pages[gid]['name']}"))
+        elif gid in tests:
+            if first:
+                raise SyncError(f"{gid}: {TEST_GATE}; this app has no approved version")
+            exp = next((x for x in client.get_all(f"/v1/apps/{app_id}/appStoreVersionExperimentsV2", {"limit": 50})
+                        if attrs(x).get("name") == tests[gid]["name"]), None)
+            if not exp or attrs(exp).get("state") not in TEST_EDITABLE:
+                raise SyncError(f"{gid}: no test waiting to be submitted ({attrs(exp).get('state') or 'not created'})")
+            out.append(("appStoreVersionExperimentV2", "appStoreVersionExperiments", exp["id"],
+                        f"test {tests[gid]['name']}"))
+        elif gid in events:
+            ev = next((x for x in client.get_all(f"/v1/apps/{app_id}/appEvents", {"limit": 200})
+                       if attrs(x).get("referenceName") == events[gid]["reference_name"]), None)
+            if not ev or attrs(ev).get("eventState") not in EVENT_EDITABLE | {"READY_FOR_REVIEW"}:
+                raise SyncError(f"{gid}: no event draft to submit ({attrs(ev).get('eventState') or 'not created'})")
+            out.append(("appEvent", "appEvents", ev["id"], f"in-app event {events[gid]['reference_name']}"))
+        else:
+            raise SyncError(f"{gid} isn't an id in growth.yaml")
+    return out
+
+
 def cmd_submit(client, kit, args):
     app = find_app(client, kit.bundle_id)
     if not app:
         print(f"No app with bundle id {kit.bundle_id}.")
         return 1
     versions = client.get_all(f"/v1/apps/{app['id']}/appStoreVersions", {"filter[platform]": "IOS", "limit": 200})
+    extra = []
+    if args.growth:
+        try:
+            extra = growth_review_items(client, kit, app["id"], [x.strip() for x in args.growth.split(",") if x.strip()],
+                                        is_first(versions))
+        except SyncError as e:
+            print(f"Refused: {e}")
+            return 1
+        if not is_first(versions):
+            return submit_growth_only(client, kit, app, extra, args)
     target, _, _ = pick_versions(versions, kit.version)
     if not target or vstate(target) not in EDITABLE:
         print(f"Version {kit.version} is {vstate(target) or 'missing'}: nothing to submit.")
@@ -1690,13 +2230,51 @@ def cmd_submit(client, kit, args):
         client.post("/v1/reviewSubmissionItems", body("reviewSubmissionItems", None, relationships={
             "reviewSubmission": ref("reviewSubmissions", sid),
             "appStoreVersion": ref("appStoreVersions", target["id"])}))
+    add_review_items(client, sid, extra, draft_items)
     client.patch(f"/v1/reviewSubmissions/{sid}", body("reviewSubmissions", {"submitted": True}, id=sid))
     if client.dry_run:
         print_recorded(client, kit)
         return 0
-    write_progress(kit, {"submit/add-for-review-then-submit-for-review":
-                         {"live": {}, "notes": [f"Version {kit.version} submitted for review"]}})
-    print(f"submitted version {kit.version} for review (submission {sid})")
+    done = {"submit/add-for-review-then-submit-for-review":
+            {"live": {}, "notes": [f"Version {kit.version} submitted for review"]}}
+    for gid in [x.strip() for x in (args.growth or "").split(",") if x.strip()]:
+        done[f"growth/{gid}"] = {"live": {}, "notes": [f"Submitted for review with version {kit.version}"]}
+    write_progress(kit, done)
+    print(f"submitted version {kit.version} for review (submission {sid})"
+          + "".join(f" with {label}" for *_, label in extra))
+    return 0
+
+
+def add_review_items(client, sid, items, draft_items=()):
+    for rel, typ, oid, _ in items:
+        if rel not in draft_items:
+            client.post("/v1/reviewSubmissionItems", body("reviewSubmissionItems", None, relationships={
+                "reviewSubmission": ref("reviewSubmissions", sid), rel: ref(typ, oid)}))
+
+
+def submit_growth_only(client, kit, app, items, args):
+    """After launch, custom product pages, tests and events go to App Review without a version."""
+    if not args.yes and not client.dry_run:
+        print("Submitting sends " + ", ".join(label for *_, label in items) + " to App Review: ask the owner, then "
+              "run again with --yes.")
+        return 2
+    existing = client.get_all("/v1/reviewSubmissions", {"filter[app]": app["id"], "filter[platform]": "IOS",
+                                                         "filter[state]": "READY_FOR_REVIEW", "limit": 20})
+    if existing:
+        sid = existing[0]["id"]
+        have = draft_item_kinds(client, sid)
+    else:
+        sid = client.post("/v1/reviewSubmissions", body("reviewSubmissions", {"platform": "IOS"},
+                                                        relationships={"app": ref("apps", app["id"])}))["data"]["id"]
+        have = set()
+    add_review_items(client, sid, items, have)
+    client.patch(f"/v1/reviewSubmissions/{sid}", body("reviewSubmissions", {"submitted": True}, id=sid))
+    if client.dry_run:
+        print_recorded(client, kit)
+        return 0
+    gids = [x.strip() for x in args.growth.split(",") if x.strip()]
+    write_progress(kit, {f"growth/{g}": {"live": {}, "notes": ["Submitted for review"]} for g in gids})
+    print("submitted " + ", ".join(label for *_, label in items) + f" for review (submission {sid})")
     return 0
 
 
@@ -1708,6 +2286,8 @@ def cmd_release(client, kit, args):
     if not app:
         print(f"No app with bundle id {kit.bundle_id}.")
         return 1
+    if args.start_test:
+        return start_test(client, kit, app, args)
     versions = client.get_all(f"/v1/apps/{app['id']}/appStoreVersions", {"filter[platform]": "IOS", "limit": 200})
     target, _, live_v = pick_versions(versions, kit.version)
     if args.pause or args.resume:
@@ -1747,6 +2327,33 @@ def cmd_release(client, kit, args):
     return 0
 
 
+def start_test(client, kit, app, args):
+    """Start an approved product page optimization test: visitors see the treatments from then on (Apple: a started
+    test can't be changed, and a stopped one can't be restarted). Its own yes, like a release."""
+    t = next((x for x in gr.load(kit.path)["tests"] if x["id"] == args.start_test), None)
+    if not t:
+        print(f"{args.start_test} isn't a test id in growth.yaml")
+        return 2
+    exp = next((x for x in client.get_all(f"/v1/apps/{app['id']}/appStoreVersionExperimentsV2", {"limit": 50})
+                if attrs(x).get("name") == t["name"]), None)
+    state = attrs(exp).get("state")
+    if state not in ("ACCEPTED", "APPROVED"):
+        print(f"Test {t['name']} is {state or 'not created'}: only an approved test can start.")
+        return 1
+    if not args.yes and not client.dry_run:
+        print(f"Starting {t['name']} shows its treatments to {t['traffic_proportion']}% of visitors and can't be "
+              f"undone: ask the owner, then run again with --yes.")
+        return 2
+    client.patch(f"/v2/appStoreVersionExperiments/{exp['id']}",
+                 body("appStoreVersionExperiments", {"started": True}, id=exp["id"]))
+    if client.dry_run:
+        print_recorded(client, kit)
+        return 0
+    write_progress(kit, {f"growth/{t['id']}": {"live": {}, "notes": ["Test started"]}})
+    print(f"started test {t['name']}")
+    return 0
+
+
 COMMANDS = {"status": cmd_status, "plan": cmd_plan, "apply": cmd_apply, "submit": cmd_submit, "release": cmd_release}
 
 
@@ -1760,6 +2367,8 @@ def main(argv=None, client=None):
     ap.add_argument("--yes", action="store_true", help="the owner said yes to this exact step")
     ap.add_argument("--pause", action="store_true", help="release: pause the phased release")
     ap.add_argument("--resume", action="store_true", help="release: resume the phased release")
+    ap.add_argument("--growth", help="submit: comma list of growth.yaml ids (custom product pages, tests, events)")
+    ap.add_argument("--start-test", help="release: start this approved product page optimization test (growth id)")
     ap.add_argument("--key-id")
     ap.add_argument("--issuer-id")
     ap.add_argument("--key-path")

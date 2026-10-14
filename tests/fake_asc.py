@@ -18,7 +18,17 @@ CHILD = {"items": "reviewSubmissionItems",
     "inAppPurchasesV2": "inAppPurchases", "inAppPurchaseVersions": "inAppPurchaseVersions",
     "inAppPurchaseLocalizations": "inAppPurchaseLocalizations", "image": "inAppPurchaseImages",
     "appStoreReviewScreenshot": "inAppPurchaseAppStoreReviewScreenshots", "manualPrices": "inAppPurchasePrices",
+    # growth: custom product pages, product page optimization, in-app events
+    "appCustomProductPages": "appCustomProductPages", "appCustomProductPageVersions": "appCustomProductPageVersions",
+    "appCustomProductPageLocalizations": "appCustomProductPageLocalizations",
+    "appStoreVersionExperimentsV2": "appStoreVersionExperiments",
+    "appStoreVersionExperimentTreatments": "appStoreVersionExperimentTreatments",
+    "appStoreVersionExperimentTreatmentLocalizations": "appStoreVersionExperimentTreatmentLocalizations",
+    "appEvents": "appEvents", "localizations": "appEventLocalizations",
 }
+# Relationship names a placement can hang on (exactly one per placement).
+PLACEMENT_PARENTS = ("appStoreVersionLocalization", "appCustomProductPageLocalization",
+                     "appStoreVersionExperimentTreatmentLocalization", "appEventLocalization")
 TO_ONE = {"ageRatingDeclaration", "appStoreReviewDetail", "build", "appStoreVersionPhasedRelease", "assetLibrary",
           "image", "appStoreReviewScreenshot"}
 UPLOADABLE = {"appAssetLibraryImages", "appAssetLibraryVideos", "inAppPurchaseImages",
@@ -44,6 +54,11 @@ class FakeASC:
                  "specMappings": [{"placementGroupId": "DEFAULT_PROFILE", "specs": ["s1", "s2"]}]},
                 {"placementTypeId": "APP_STORE_SEARCH_RESULTS_ASSET", "acceptsAssetCategories": ["CREATIVE_ASSETS"],
                  "specMappings": [{"placementGroupId": "DEFAULT_PROFILE", "specs": ["s1", "s3"]}]}]}}]}
+        self.refdata["data"][0]["attributes"]["placementTypes"] += [
+            {"placementTypeId": t, "acceptsAssetCategories": ["CREATIVE_ASSETS"],
+             "specMappings": [{"placementGroupId": "DEFAULT_PROFILE", "specs": ["e1"]}]}
+            for t in ("EVENT_CARD_ASSET", "EVENT_DETAILS_PAGE_ASSET")]
+        self.app_keywords = {}  # locale → [keyword id] for GET /v1/apps/{id}/searchKeywords
         self.fail = {}        # (method, path) → (status, code) to return instead
         self.on_create = {}   # type → callback(resource)
 
@@ -78,11 +93,20 @@ class FakeASC:
         try:
             if method == "GET":
                 doc = self._get(parts, q)
+            elif method == "POST" and len(parts) == 4 and parts[2] == "relationships":
+                r = self.store[parts[1]]
+                r["keywords"] = r.get("keywords", []) + [d["id"] for d in js["data"]]
+                return 204, {}, b""
             elif method == "POST":
                 doc = self._post(parts, js)
                 return 201, {"x-rate-limit": "user-hour-lim:3500;user-hour-rem:3400;"}, json.dumps(doc).encode()
             elif method == "PATCH":
                 doc = self._patch(parts, js)
+            elif method == "DELETE" and len(parts) == 4 and parts[2] == "relationships":
+                r = self.store[parts[1]]
+                gone = {d["id"] for d in js["data"]}
+                r["keywords"] = [k for k in r.get("keywords", []) if k not in gone]
+                return 204, {}, b""
             elif method == "DELETE":
                 self.store.pop(parts[1], None)
                 return 204, {}, b""
@@ -105,6 +129,10 @@ class FakeASC:
             r = self.store[parts[1]]
             return {"data": r, "included": self._included(r, q)}
         parent, seg = self.store[parts[1]], parts[2]
+        if seg == "searchKeywords":
+            ids = self.app_keywords.get(q.get("filter[locale]"), []) if parent["type"] == "apps" \
+                else parent.get("keywords", [])
+            return {"data": [{"type": "appKeywords", "id": k} for k in ids], "links": {}}
         typ = CHILD[seg]
         if seg in TO_ONE:
             fwd = (parent["relationships"].get(seg) or {}).get("data")
@@ -160,13 +188,33 @@ class FakeASC:
             if isinstance(v.get("data"), list):
                 r["relationships"][k] = {"data": v["data"]}
         if typ == "appAssetLibraryPlacements":
-            loc = rels["appStoreVersionLocalization"][1]
-            n = len([p for p in self.of_type(typ) if p["relationships"]["appStoreVersionLocalization"]["data"]["id"]
-                     == loc and p["attributes"].get("placementGroup") == a.get("placementGroup")])
+            parent = next(k for k in PLACEMENT_PARENTS if k in rels)
+            loc = rels[parent][1]
+            n = len([p for p in self.of_type(typ) if ((p["relationships"].get(parent) or {}).get("data") or {})
+                     .get("id") == loc and p["attributes"].get("placementGroup") == a.get("placementGroup")])
             r["attributes"]["placementGroupPosition"] = n
         if typ == "appAssetLibraryPlacementOrderingRequests":
             for i, ref in enumerate(d["relationships"]["orderedPlacements"]["data"]):
                 self.store[ref["id"]]["attributes"]["placementGroupPosition"] = i + 1
+        if typ == "appCustomProductPages":  # inline version + localization, as Apple's example request
+            r["attributes"].setdefault("visible", True)
+            new = {}
+            for inc in js.get("included") or []:
+                if inc["type"] == "appCustomProductPageVersions":
+                    new[inc["id"]] = self.add(inc["type"], {**(inc.get("attributes") or {}), "version": "1",
+                                                            "state": "PREPARE_FOR_SUBMISSION"},
+                                              {"appCustomProductPage": (typ, rid)})
+            for inc in js.get("included") or []:
+                if inc["type"] == "appCustomProductPageLocalizations":
+                    self.add(inc["type"], inc.get("attributes"),
+                             {"appCustomProductPageVersion": ("appCustomProductPageVersions", next(iter(new.values())))})
+            r["relationships"].pop("appCustomProductPageVersions", None)
+        if typ == "appCustomProductPageVersions":
+            r["attributes"].setdefault("state", "PREPARE_FOR_SUBMISSION")
+        if typ == "appStoreVersionExperiments":
+            r["attributes"].setdefault("state", "PREPARE_FOR_SUBMISSION")
+        if typ == "appEvents":
+            r["attributes"].setdefault("eventState", "DRAFT")
         if typ in self.on_create:
             self.on_create[typ](r)
         return {"data": r}
