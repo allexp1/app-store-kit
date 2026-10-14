@@ -1,0 +1,241 @@
+import json
+import pathlib
+import plistlib
+
+import yaml
+
+import precheck as pc
+
+MANIFEST_UD = {"NSPrivacyTracking": False, "NSPrivacyTrackingDomains": [], "NSPrivacyCollectedDataTypes": [],
+               "NSPrivacyAccessedAPITypes": [{"NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+                                              "NSPrivacyAccessedAPITypeReasons": ["CA92.1"]}]}
+BASE_INFO = {"CFBundleDisplayName": "Demo", "CFBundleShortVersionString": "1.0", "UILaunchScreen": {},
+             "ITSAppUsesNonExemptEncryption": False, "UIRequiredDeviceCapabilities": ["arm64"]}
+
+
+def make_project(tmp, info=None, swift="", manifest=MANIFEST_UD, resolved=None, storekit=None,
+                 xcstrings_langs=("en",), icon=True):
+    """A minimal XcodeGen project: project.yml with info properties, one Swift file, optional extras."""
+    root = tmp / "proj"
+    app = root / "App"
+    app.mkdir(parents=True)
+    props = dict(BASE_INFO, **(info or {}))
+    yml = {"name": "Demo", "options": {"deploymentTarget": {"iOS": "26.0"}},
+           "targets": {"Demo": {"type": "application", "platform": "iOS", "sources": [{"path": "App"}],
+                                "settings": {"base": {"PRODUCT_BUNDLE_IDENTIFIER": "com.acme.demo"}},
+                                "info": {"path": "App/Info.plist", "properties": props}}}}
+    (root / "project.yml").write_text(yaml.safe_dump(yml, sort_keys=False))
+    (app / "Main.swift").write_text(swift or "import SwiftUI\nstruct V: View { var body: some View { Text(\"Hi\") } }\n")
+    (app / "About.swift").write_text(
+        'import SwiftUI\nstruct About: View { var body: some View { VStack {\n'
+        '  Link("Privacy Policy", destination: URL(string: "https://acme.test/privacy")!)\n'
+        '  Link("Contact", destination: URL(string: "mailto:help@acme.test")!)\n} } }\n')
+    if manifest is not None:
+        (app / "PrivacyInfo.xcprivacy").write_bytes(plistlib.dumps(manifest))
+    if resolved:
+        (root / "Package.resolved").write_text(json.dumps({"pins": resolved, "version": 3}))
+    if storekit is not None:
+        (root / "Demo.storekit").write_text(json.dumps({"products": storekit}))
+    strings = {"sourceLanguage": xcstrings_langs[0], "strings": {"Hi": {"localizations": {
+        lang: {"stringUnit": {"state": "translated", "value": "Hi"}} for lang in xcstrings_langs}}}}
+    (app / "Localizable.xcstrings").write_text(json.dumps(strings))
+    if icon:
+        (app / "AppIcon.icon").mkdir()
+    return root
+
+
+def make_kit(tmp, facts):
+    kit = tmp / "kit"
+    kit.mkdir()
+    (kit / "facts.yaml").write_text(yaml.safe_dump(facts))
+    return kit
+
+
+def run_json(root, capsys, *extra):
+    code = pc.main([str(root), "--json", "--xcode", "27.0", "--today", "2026-10-14", *map(str, extra)])
+    data = json.loads(capsys.readouterr().out)
+    return code, data
+
+
+def ids(data, sev=None):
+    return [f["id"] for f in data["findings"] if sev is None or f["severity"] == sev]
+
+
+def test_catalogue_parses_all_rules():
+    cat = pc.load_catalogue()
+    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 101
+    assert cat["UP-05"]["severity"] == "BLOCKER"
+    assert cat["DF-13"]["severity"] == "WARNING"
+    assert cat["PAY-02"]["sources"][0].startswith("https://developer.apple.com")
+
+
+def test_photos_without_purpose_string_is_blocker(tmp_path, capsys):
+    root = make_project(tmp_path, swift="import Photos\nlet s = PHPhotoLibrary.authorizationStatus(for: .readWrite)\n")
+    code, data = run_json(root, capsys)
+    f = [f for f in data["findings"] if f["id"] == "UP-08"]
+    assert f and f[0]["severity"] == "BLOCKER" and "NSPhotoLibraryUsageDescription" in f[0]["message"]
+    assert f[0]["evidence"][0].endswith("App/Main.swift:2")
+    assert code == 2
+
+
+def test_photos_with_purpose_string_passes(tmp_path, capsys):
+    root = make_project(tmp_path, info={"NSPhotoLibraryUsageDescription":
+                                        "Demo shows your photos so you can sort them into albums on this phone."},
+                        swift="import Photos\nlet s = PHPhotoLibrary.authorizationStatus(for: .readWrite)\n")
+    code, data = run_json(root, capsys)
+    assert "UP-08" not in ids(data)
+    assert any(p["id"] == "UP-08" and "Photos" in p["message"] for p in data["passes"])
+    assert code == 0
+
+
+def test_placeholder_purpose_string_is_flagged(tmp_path, capsys):
+    root = make_project(tmp_path, info={"NSPhotoLibraryUsageDescription": "TODO"},
+                        swift="let s = PHPhotoLibrary.shared()\n")
+    _, data = run_json(root, capsys)
+    assert "UP-09" in ids(data, "LIKELY REJECTION")
+
+
+def test_userdefaults_without_manifest_reason(tmp_path, capsys):
+    root = make_project(tmp_path, swift='let d = UserDefaults.standard.bool(forKey: "x")\n',
+                        manifest={"NSPrivacyTracking": False, "NSPrivacyAccessedAPITypes": []})
+    code, data = run_json(root, capsys)
+    f = [f for f in data["findings"] if f["id"] == "UP-05"]
+    assert f and f[0]["severity"] == "BLOCKER" and "UserDefaults" in f[0]["message"]
+    assert code == 2
+
+
+def test_userdefaults_without_any_manifest(tmp_path, capsys):
+    root = make_project(tmp_path, swift="@AppStorage(\"x\") var x = false\n", manifest=None)
+    _, data = run_json(root, capsys)
+    assert "UP-04" in ids(data, "BLOCKER")
+
+
+def test_userdefaults_declared_passes_and_debug_code_is_ignored(tmp_path, capsys):
+    swift = 'let d = UserDefaults.standard\n#if DEBUG\nlet u = UIScreen.main.bounds\n#endif\n'
+    root = make_project(tmp_path, swift=swift)
+    _, data = run_json(root, capsys)
+    assert "UP-05" not in ids(data)
+    assert "DF-13" not in ids(data)
+
+
+def test_screen_assumptions_warn(tmp_path, capsys):
+    root = make_project(tmp_path, swift="let w = UIScreen.main.bounds.width\n")
+    code, data = run_json(root, capsys)
+    assert "DF-13" in ids(data, "WARNING")
+    assert code == 0
+    assert pc.main([str(root), "--xcode", "27.0", "--today", "2026-10-14", "--strict", "--json"]) == 1
+
+
+def test_google_mobile_ads_without_att_key(tmp_path, capsys):
+    pins = [{"identity": "swift-package-manager-google-mobile-ads", "kind": "remoteSourceControl",
+             "location": "https://github.com/googleads/swift-package-manager-google-mobile-ads.git",
+             "state": {"version": "13.10.0"}}]
+    root = make_project(tmp_path, resolved=pins, swift="import GoogleMobileAds\n")
+    code, data = run_json(root, capsys)
+    f = [f for f in data["findings"] if f["id"] == "PR-04"]
+    assert f and "NSUserTrackingUsageDescription" in f[0]["message"]
+    assert f[0]["severity"] == "LIKELY REJECTION"
+    assert code == 1
+
+
+def test_storekit_purchase_without_restore(tmp_path, capsys):
+    swift = ('import StoreKit\nfunc buy() async throws {\n'
+             '  let p = try await Product.products(for: ["com.acme.demo.pro"])\n'
+             '  _ = try await p.first?.purchase()\n}\n')
+    sk = [{"productID": "com.acme.demo.pro", "type": "NonConsumable"}]
+    root = make_project(tmp_path, swift=swift, storekit=sk)
+    _, data = run_json(root, capsys)
+    assert "PAY-02" in ids(data, "LIKELY REJECTION")
+    root2 = make_project(tmp_path / "b", swift=swift + "func restore() async throws { try await AppStore.sync() }\n",
+                         storekit=sk)
+    _, data2 = run_json(root2, capsys)
+    assert "PAY-02" not in ids(data2)
+    assert any(p["id"] == "PAY-03" for p in data2["passes"])
+
+
+def test_product_id_mismatch_between_kit_and_storekit(tmp_path, capsys):
+    swift = 'let p = try await Product.products(for: ["com.acme.demo.pro"])\nAppStore.sync()\n'
+    root = make_project(tmp_path, swift=swift, storekit=[{"productID": "com.acme.demo.pro", "type": "NonConsumable"}])
+    kit = make_kit(tmp_path, {"monetization": {"iap": [{"product_id": "com.acme.demo.premium"}]}})
+    _, data = run_json(root, capsys, "--kit", kit, "--out", tmp_path / "out.md")
+    msgs = [f["message"] for f in data["findings"] if f["id"] == "PAY-03"]
+    assert any("com.acme.demo.premium" in m for m in msgs)
+
+
+def test_store_locale_missing_from_app(tmp_path, capsys):
+    root = make_project(tmp_path, xcstrings_langs=("en",))
+    kit = make_kit(tmp_path, {"locales": ["en-US", "de-DE"], "urls": {"privacy_policy": "https://acme.test/p",
+                                                                    "support": "https://acme.test/s"},
+                              "copyright": "2026 Acme"})
+    code, data = run_json(root, capsys, "--kit", kit, "--out", tmp_path / "out.md")
+    f = [f for f in data["findings"] if f["id"] == "LOC-01"]
+    assert len(f) == 1 and "de-DE" in f[0]["message"] and f[0]["severity"] == "WARNING"
+    root2 = make_project(tmp_path / "b", xcstrings_langs=("en", "de"))
+    _, data2 = run_json(root2, capsys, "--kit", kit, "--out", tmp_path / "out2.md")
+    assert "LOC-01" not in ids(data2)
+
+
+def test_markdown_report_sections_and_exit_codes(tmp_path, capsys):
+    root = make_project(tmp_path, swift="import Photos\nlet s = PHPhotoLibrary.shared()\n")
+    kit = make_kit(tmp_path, {"urls": {"privacy_policy": "https://acme.test/p", "support": "https://acme.test/s"},
+                              "copyright": "2026 Acme"})
+    out = tmp_path / "PRECHECK.md"
+    code = pc.main([str(root), "--kit", str(kit), "--out", str(out), "--xcode", "27.0", "--today", "2026-10-14"])
+    assert code == 2
+    md = out.read_text()
+    for head in ("## BLOCKER", "## LIKELY REJECTION", "## WARNING", "## PASS", "## For Claude to judge"):
+        assert head in md
+    assert "App/Main.swift:2" in md and "https://developer.apple.com" in md
+
+
+def test_clean_project_exits_zero_and_old_xcode_blocks(tmp_path, capsys):
+    root = make_project(tmp_path)
+    code, data = run_json(root, capsys)
+    assert code == 0, data["findings"]
+    code2, data2 = run_json(root, capsys, "--xcode", "16.4")
+    assert code2 == 2 and "UP-01" in ids(data2, "BLOCKER")
+
+
+def test_missing_launch_screen_icon_and_encryption_key(tmp_path, capsys):
+    root = make_project(tmp_path, icon=False)
+    yml = yaml.safe_load((root / "project.yml").read_text())
+    props = yml["targets"]["Demo"]["info"]["properties"]
+    del props["UILaunchScreen"], props["ITSAppUsesNonExemptEncryption"]
+    (root / "project.yml").write_text(yaml.safe_dump(yml))
+    _, data = run_json(root, capsys)
+    assert {"UP-10", "UP-11"} <= set(ids(data, "BLOCKER"))
+    assert "UP-12" in ids(data, "WARNING")
+
+
+def test_third_party_ai_and_login_without_siwa(tmp_path, capsys):
+    swift = ('let u = URL(string: "https://api.openai.com/v1/chat/completions")!\n'
+             'GIDSignIn.sharedInstance.signIn(withPresenting: vc)\n')
+    root = make_project(tmp_path, swift=swift)
+    _, data = run_json(root, capsys)
+    assert "PR-08" in ids(data, "WARNING")
+    assert "AC-03" in ids(data, "LIKELY REJECTION")
+    assert "AC-01" in ids(data, "LIKELY REJECTION")
+
+
+def test_background_processing_needs_identifiers(tmp_path, capsys):
+    root = make_project(tmp_path, info={"UIBackgroundModes": ["processing", "audio"]},
+                        swift='let r = BGProcessingTaskRequest(identifier: "com.acme.demo.index")\n')
+    _, data = run_json(root, capsys)
+    msgs = " ".join(f["message"] for f in data["findings"] if f["id"] == "DF-09")
+    assert "BGTaskSchedulerPermittedIdentifiers" in msgs and "'audio'" in msgs
+
+
+def test_kids_category_with_ads(tmp_path, capsys):
+    root = make_project(tmp_path, swift="import GoogleMobileAds\n",
+                        info={"NSUserTrackingUsageDescription": "Ads may use your activity in other apps to be relevant."})
+    kit = make_kit(tmp_path, {"kids_category": True})
+    _, data = run_json(root, capsys, "--kit", kit, "--out", tmp_path / "o.md")
+    assert "CS-04" in ids(data, "LIKELY REJECTION")
+
+
+def test_comments_and_previews_are_not_code(tmp_path, capsys):
+    swift = ('// let s = PHPhotoLibrary.shared()\n/* CLLocationManager() */\n'
+             '#Preview {\n  let d = UserDefaults(suiteName: "p")!\n  return Text("$4.99")\n}\n')
+    root = make_project(tmp_path, swift=swift, manifest=MANIFEST_UD)
+    _, data = run_json(root, capsys)
+    assert not {"UP-08", "UP-05", "PAY-04"} & set(ids(data))

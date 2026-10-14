@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+node_modules/
+*.tgz
+# Never commit App Store Connect keys or a kit's private values.
+*.p8
+private.yaml
+connect-guide.private.html

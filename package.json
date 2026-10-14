@@ -1,0 +1,45 @@
+{
+  "name": "app-store-kit",
+  "version": "1.0.0",
+  "description": "A Claude skill that takes an iOS/iPadOS app from code to the App Store and keeps it updated: code pre-check against Apple's rules, product page in every language, screenshots, build upload, and App Store Connect filled through the official API.",
+  "bin": {
+    "app-store-kit": "bin/install.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=16.7.0"
+  },
+  "files": [
+    "bin/",
+    "SKILL.md",
+    "scripts/",
+    "references/",
+    "templates/",
+    ".living/",
+    "requirements.txt",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent-skill",
+    "skill",
+    "app-store",
+    "app-store-connect",
+    "ios",
+    "ipados",
+    "aso",
+    "screenshots",
+    "app-review"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/allexp1/app-store-kit.git"
+  },
+  "homepage": "https://github.com/allexp1/app-store-kit#readme",
+  "bugs": {
+    "url": "https://github.com/allexp1/app-store-kit/issues"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,33 @@
+# Example frames.yaml for render.py. Copy to KIT/frames.yaml and edit.
+# Copy only: which screen goes where and what each caption says. Layout lives in the templates.
+defaults:
+  template: caption-top          # caption-top | caption-bottom | full-bleed | dark
+  background: "#F5F1E8"
+  ink: "#111114"
+  device: "#111114"              # plain rounded bezel colour (not Apple's product bezel)
+  dark_background: "#111114"
+  dark_ink: "#F5F1E8"
+  dark_device: "#2A2A2E"
+  font: '"SF Pro Display", -apple-system, system-ui, "Inter", sans-serif'
+slots:                           # slot ids from rules.json; width/height are taken from the first accepted size if omitted
+  iphone-di-medium: {width: 1206, height: 2622}
+  ipad-13: {width: 2064, height: 2752, device_scale: 0.76}
+locales: [en-US]
+frames:
+  - id: hero
+    caption:
+      en-US: "Clear 1,000 photos in minutes"
+    screen:                      # paths relative to this file; {locale} is substituted
+      iphone-di-medium: captures/{locale}/iphone/hero.png
+      ipad-13: captures/{locale}/ipad/hero.png
+  - id: search
+    caption: {en-US: "Find any photo by describing it"}
+    screen:
+      iphone-di-medium: captures/{locale}/iphone/search.png
+      ipad-13: captures/{locale}/ipad/search.png
+  - id: night
+    template: dark
+    caption: {en-US: "Easy on the eyes at night"}
+    screen:
+      iphone-di-medium: captures/{locale}/iphone/dark.png
+      ipad-13: captures/{locale}/ipad/dark.png

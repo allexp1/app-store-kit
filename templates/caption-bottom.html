@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- app-store-kit template: caption-bottom. Device anchored to the top, caption underneath. -->
+<html><head><meta charset="utf-8"><style>
+.t-caption-bottom{position:relative;overflow:hidden;width:var(--w);height:var(--h);background:var(--bg)}
+.t-caption-bottom .caption{position:absolute;left:var(--cap-side);right:var(--cap-side);bottom:var(--cap-top);margin:0;
+  color:var(--ink);font-family:var(--font);font-weight:700;font-size:var(--fs);line-height:1.08;letter-spacing:-0.02em;
+  text-align:center;text-wrap:balance}
+.t-caption-bottom .device{position:absolute;left:var(--dev-x);top:var(--dev-y-bottom);padding:var(--bezel);
+  border-radius:calc(var(--radius) + var(--bezel));background:var(--device)}
+.t-caption-bottom .device img{display:block;width:var(--dev-w);height:var(--dev-h);border-radius:var(--radius);object-fit:cover}
+</style></head><body style="margin:0">
+<div class="frame t-caption-bottom" id="{{ID}}" style="{{VARS}}">
+  <div class="device"><img alt="" src="{{SCREEN}}"></div>
+  <p class="caption">{{CAPTION}}</p>
+</div>
+</body></html>

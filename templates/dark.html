@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- app-store-kit template: dark. caption-top on the dark palette (dark_background / dark_ink); use it with a
+     capture taken in dark appearance. One per set is the house style, for contrast in the scroll. -->
+<html><head><meta charset="utf-8"><style>
+.t-dark{position:relative;overflow:hidden;width:var(--w);height:var(--h);background:var(--bg)}
+.t-dark .caption{position:absolute;left:var(--cap-side);right:var(--cap-side);top:var(--cap-top);margin:0;
+  color:var(--ink);font-family:var(--font);font-weight:700;font-size:var(--fs);line-height:1.08;letter-spacing:-0.02em;
+  text-align:center;text-wrap:balance}
+.t-dark .device{position:absolute;left:var(--dev-x);top:var(--dev-y);padding:var(--bezel);
+  border-radius:calc(var(--radius) + var(--bezel));background:var(--device);
+  box-shadow:0 0 0 var(--hairline) rgba(255,255,255,.18)}
+.t-dark .device img{display:block;width:var(--dev-w);height:var(--dev-h);border-radius:var(--radius);object-fit:cover}
+</style></head><body style="margin:0">
+<div class="frame t-dark" id="{{ID}}" style="{{VARS}}">
+  <p class="caption">{{CAPTION}}</p>
+  <div class="device"><img alt="" src="{{SCREEN}}"></div>
+</div>
+</body></html>

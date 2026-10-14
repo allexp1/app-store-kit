@@ -1,0 +1,7 @@
+# Python 3.10+. Needed by the scripts.
+Pillow>=10
+PyYAML>=6
+# Optional: render.py uses Playwright (or any Chromium) to draw screenshot frames.
+# playwright>=1.40
+# Optional: faster JWT signing for the App Store Connect API (the openssl CLI is used otherwise).
+# cryptography>=42

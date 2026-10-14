@@ -1,0 +1,510 @@
+{
+  "schema": 1,
+  "fetched": "2026-10-14",
+  "note": "Baseline snapshot shipped with the skill. A kit must freeze its own copy (snapshot_rules.py) right before submission and validate against that copy.",
+  "sources": [
+    {
+      "id": "screenshots",
+      "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
+      "text_sha256": "9735029480c3971c7e0f2cf829f2ed39f50067a618ce09573bb325debc8032ad"
+    },
+    {
+      "id": "previews",
+      "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/app-preview-specifications",
+      "text_sha256": "4ab51348fee50ef2b5d5d370a4d11a06fc47f37acbf29ad3ca662e672783cd9c"
+    },
+    {
+      "id": "version-info",
+      "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information",
+      "text_sha256": "058330d0597b1c256b4ae9beea9a67bfd7a755b0080c86adc979d000e3de8e01"
+    },
+    {
+      "id": "app-info",
+      "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/app-information",
+      "text_sha256": "97e7b6e23397e119ba49f2d2f50db98bef38bda7a904d8d175a50fbe2229dcd1"
+    },
+    {
+      "id": "iap-info",
+      "url": "https://developer.apple.com/help/app-store-connect/reference/in-app-purchases-and-subscriptions/in-app-purchase-information",
+      "text_sha256": "ce1b97febb4d0e866c1f3bb9510357c909aa922bf3060e9c22360f2c120f3c9f"
+    },
+    {
+      "id": "review-guidelines",
+      "url": "https://developer.apple.com/app-store/review/guidelines/",
+      "text_sha256": "4757c78422154f6dba5cf35af2a90cf427e5b7c56e974238344df717cb9eb93f"
+    },
+    {
+      "id": "privacy-details",
+      "url": "https://developer.apple.com/app-store/app-privacy-details/",
+      "text_sha256": "0dad486e78e4a6f443213f7aa7ff1bd36446f901d19d1d5df6183021e6c3114b"
+    },
+    {
+      "id": "marketing",
+      "url": "https://developer.apple.com/app-store/marketing/guidelines/",
+      "text_sha256": "113d6b7a1cbc322f8e1cf8a68154184a165e84ce1bffe6df29f38de42f2be54d"
+    },
+    {
+      "id": "product-page",
+      "url": "https://developer.apple.com/app-store/product-page/",
+      "text_sha256": "30f6add6b8179f00435d89bffe2855490dc83effaa42d32c91fc8eb4036d6d8f"
+    }
+  ],
+  "screenshots": {
+    "formats": [
+      "PNG",
+      "JPEG"
+    ],
+    "extensions": [
+      ".png",
+      ".jpg",
+      ".jpeg"
+    ],
+    "alpha_allowed": false,
+    "min_per_set": 1,
+    "max_per_set": 10,
+    "color_profiles": [
+      "srgb",
+      "display p3"
+    ],
+    "slots": {
+      "iphone-duo-outer": {
+        "label": "iPhone Duo, outer display",
+        "family": "iphone",
+        "sizes": [
+          [
+            1398,
+            2034
+          ]
+        ],
+        "required": false,
+        "required_from": "2027-04",
+        "required_note": "Required from April 2027 for apps built with the iOS 27.1 SDK or later"
+      },
+      "iphone-duo-inner": {
+        "label": "iPhone Duo, inner display",
+        "family": "iphone",
+        "sizes": [
+          [
+            2007,
+            2853
+          ]
+        ],
+        "required": false,
+        "required_from": "2027-04",
+        "required_note": "Required from April 2027 for apps built with the iOS 27.1 SDK or later"
+      },
+      "iphone-di-large": {
+        "label": "iPhone with Dynamic Island (large display)",
+        "family": "iphone",
+        "sizes": [
+          [
+            1260,
+            2736
+          ],
+          [
+            1290,
+            2796
+          ],
+          [
+            1320,
+            2868
+          ]
+        ],
+        "required": false
+      },
+      "iphone-faceid-large": {
+        "label": "iPhone with Face ID (large display)",
+        "family": "iphone",
+        "sizes": [
+          [
+            1284,
+            2778
+          ],
+          [
+            1242,
+            2688
+          ]
+        ],
+        "required": false,
+        "required_note": "Required only if iphone-di-large is not provided"
+      },
+      "iphone-di-medium": {
+        "label": "iPhone with Dynamic Island (medium display)",
+        "family": "iphone",
+        "sizes": [
+          [
+            1179,
+            2556
+          ],
+          [
+            1206,
+            2622
+          ]
+        ],
+        "required": true
+      },
+      "iphone-faceid-medium": {
+        "label": "iPhone with Face ID (medium display)",
+        "family": "iphone",
+        "sizes": [
+          [
+            1170,
+            2532
+          ],
+          [
+            1125,
+            2436
+          ],
+          [
+            1080,
+            2340
+          ]
+        ],
+        "required": false
+      },
+      "iphone-home-large": {
+        "label": "iPhone with Home Button (large display)",
+        "family": "iphone",
+        "sizes": [
+          [
+            1242,
+            2208
+          ]
+        ],
+        "required": false
+      },
+      "iphone-home-medium": {
+        "label": "iPhone with Home Button (medium display)",
+        "family": "iphone",
+        "sizes": [
+          [
+            750,
+            1334
+          ]
+        ],
+        "required": false
+      },
+      "ipad-13": {
+        "label": "iPad 13-inch display",
+        "family": "ipad",
+        "sizes": [
+          [
+            2064,
+            2752
+          ],
+          [
+            2048,
+            2732
+          ]
+        ],
+        "required": true
+      },
+      "ipad-12.9": {
+        "label": "iPad 12.9-inch display (2nd gen)",
+        "family": "ipad",
+        "sizes": [
+          [
+            2048,
+            2732
+          ]
+        ],
+        "required": false
+      },
+      "ipad-11": {
+        "label": "iPad 11-inch display",
+        "family": "ipad",
+        "sizes": [
+          [
+            1488,
+            2266
+          ],
+          [
+            1668,
+            2420
+          ],
+          [
+            1668,
+            2388
+          ],
+          [
+            1640,
+            2360
+          ]
+        ],
+        "required": false
+      },
+      "ipad-10.5": {
+        "label": "iPad 10.5-inch display",
+        "family": "ipad",
+        "sizes": [
+          [
+            1668,
+            2224
+          ]
+        ],
+        "required": false
+      },
+      "mac": {
+        "label": "Mac (16:10)",
+        "family": "mac",
+        "sizes": [
+          [
+            1280,
+            800
+          ],
+          [
+            1440,
+            900
+          ],
+          [
+            2560,
+            1600
+          ],
+          [
+            2880,
+            1800
+          ]
+        ],
+        "required": true,
+        "landscape_only": true
+      },
+      "appletv": {
+        "label": "Apple TV",
+        "family": "appletv",
+        "sizes": [
+          [
+            1920,
+            1080
+          ],
+          [
+            3840,
+            2160
+          ]
+        ],
+        "required": true,
+        "landscape_only": true
+      },
+      "vision": {
+        "label": "Apple Vision Pro",
+        "family": "vision",
+        "sizes": [
+          [
+            3840,
+            2160
+          ]
+        ],
+        "required": true,
+        "landscape_only": true
+      },
+      "watch": {
+        "label": "Apple Watch (one size, same across localizations)",
+        "family": "watch",
+        "sizes": [
+          [
+            422,
+            514
+          ],
+          [
+            410,
+            502
+          ],
+          [
+            416,
+            496
+          ],
+          [
+            396,
+            484
+          ],
+          [
+            368,
+            448
+          ],
+          [
+            312,
+            390
+          ]
+        ],
+        "required": true,
+        "portrait_only": true
+      }
+    }
+  },
+  "previews": {
+    "max_per_set": 3,
+    "min_seconds": 15,
+    "max_seconds": 30,
+    "max_fps": 30,
+    "max_bytes": 500000000,
+    "h264": {
+      "extensions": [
+        ".mov",
+        ".m4v",
+        ".mp4"
+      ],
+      "target_mbps": [
+        10,
+        12
+      ],
+      "max_level": 40,
+      "profiles": [
+        "baseline",
+        "constrained baseline",
+        "main",
+        "high"
+      ]
+    },
+    "prores": {
+      "extensions": [
+        ".mov"
+      ],
+      "profile": "HQ",
+      "target_mbps": 220
+    },
+    "audio": {
+      "channels": 2,
+      "codecs": [
+        "aac",
+        "pcm"
+      ],
+      "aac_kbps": 256,
+      "sample_rates": [
+        44100,
+        48000
+      ]
+    },
+    "resolutions": {
+      "iphone": [
+        [
+          886,
+          1920
+        ]
+      ],
+      "iphone-home-large": [
+        [
+          1080,
+          1920
+        ]
+      ],
+      "iphone-home-medium": [
+        [
+          750,
+          1334
+        ]
+      ],
+      "ipad": [
+        [
+          1200,
+          1600
+        ]
+      ],
+      "ipad-12.9": [
+        [
+          1200,
+          1600
+        ],
+        [
+          900,
+          1200
+        ]
+      ],
+      "mac": [
+        [
+          1920,
+          1080
+        ]
+      ],
+      "appletv": [
+        [
+          1920,
+          1080
+        ]
+      ],
+      "vision": [
+        [
+          3840,
+          2160
+        ]
+      ]
+    }
+  },
+  "text_limits": {
+    "name": {
+      "max": 30,
+      "min": 2,
+      "unit": "chars",
+      "source": "app-info"
+    },
+    "subtitle": {
+      "max": 30,
+      "unit": "chars",
+      "source": "app-info"
+    },
+    "promotional_text": {
+      "max": 170,
+      "unit": "chars",
+      "source": "version-info"
+    },
+    "description": {
+      "max": 4000,
+      "unit": "chars",
+      "source": "version-info",
+      "required": true
+    },
+    "keywords": {
+      "max": 100,
+      "unit": "bytes",
+      "source": "version-info",
+      "required": true,
+      "min_term_chars": 3
+    },
+    "whats_new": {
+      "max": 4000,
+      "unit": "chars",
+      "source": "version-info"
+    },
+    "review_notes": {
+      "max": 4000,
+      "unit": "bytes",
+      "source": "version-info"
+    },
+    "iap_display_name": {
+      "max": 30,
+      "min": 2,
+      "unit": "chars",
+      "source": "iap-info",
+      "note": "product-page says 35 for promoted items; App Store Connect field is 30"
+    },
+    "iap_description": {
+      "max": 45,
+      "unit": "chars",
+      "source": "iap-info",
+      "note": "product-page says 55 for promoted items; App Store Connect field is 45"
+    }
+  },
+  "iap_promo_image": {
+    "sizes": [
+      [
+        1024,
+        1024
+      ]
+    ],
+    "formats": [
+      "PNG",
+      "JPEG"
+    ],
+    "alpha_allowed": false,
+    "note": "RGB, flattened, no rounded corners, 72 dpi"
+  },
+  "house_rules": {
+    "_label": "Preferences of this skill, NOT Apple requirements. Report as warnings only.",
+    "status_bar_time": "9:41",
+    "caption_max_words": 6,
+    "min_contrast": 4.5,
+    "dark_frames_min": 1,
+    "frames_per_set": [
+      6,
+      8
+    ]
+  }
+}

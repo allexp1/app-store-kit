@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- app-store-kit template: full-bleed. The capture fills the whole frame (no device), the caption sits on a
+     solid band at the top that hides the status bar. Paint out simulator artefacts at (0,0) first. -->
+<html><head><meta charset="utf-8"><style>
+.t-full-bleed{position:relative;overflow:hidden;width:var(--w);height:var(--h);background:var(--bg)}
+.t-full-bleed img{position:absolute;left:0;top:0;width:var(--w);height:var(--h);object-fit:cover}
+.t-full-bleed .band{position:absolute;left:0;right:0;top:0;height:var(--band-h);background:var(--bg)}
+.t-full-bleed .band::after{content:"";position:absolute;left:0;right:0;bottom:calc(-1 * var(--fade));height:var(--fade);
+  background:linear-gradient(var(--bg),transparent)}
+.t-full-bleed .caption{position:absolute;left:var(--cap-side);right:var(--cap-side);top:var(--cap-top);margin:0;
+  color:var(--ink);font-family:var(--font);font-weight:700;font-size:var(--fs);line-height:1.08;letter-spacing:-0.02em;
+  text-align:center;text-wrap:balance}
+</style></head><body style="margin:0">
+<div class="frame t-full-bleed" id="{{ID}}" style="{{VARS}}">
+  <img alt="" src="{{SCREEN}}">
+  <div class="band"></div>
+  <p class="caption">{{CAPTION}}</p>
+</div>
+</body></html>
