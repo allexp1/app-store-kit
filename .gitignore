@@ -8,3 +8,4 @@ node_modules/
 *.p8
 private.yaml
 connect-guide.private.html
+.venv/
