@@ -9,7 +9,7 @@ Config   resolve_config(): CLI args, then env (ASC_KEY_ID, ASC_ISSUER_ID, ASC_KE
          `api: {key_id, issuer_id, key_path?}`. Without a key path the key file AuthKey_<KID>.p8 is looked for
          where altool looks: ./private_keys, ~/private_keys, ~/.private_keys, ~/.appstoreconnect/private_keys,
          $API_PRIVATE_KEYS_DIR.
-Client   request(method, path, params, json) over urllib (JSON:API); get_all() follows links.next; 429 is retried
+Client   request(method, path, params, json) over urllib (JSON:API); get_all() follows links.next; 429 (and 5xx on GET/PATCH/DELETE) is retried
          with Retry-After or exponential backoff; errors raise ASCError(status, errors[]). X-Rate-Limit is parsed
          into client.rate_limit. upload_operations() PUTs the parts of an asset reservation (no JWT on those).
          The transport is pluggable (tests inject a fake). dry_run=True records every non-GET call in
@@ -299,6 +299,15 @@ class Client:
                     wait = min(2 ** attempt, 60)
                 if self.log:
                     self.log(f"rate limited; waiting {wait:g} s")
+                self.sleep(wait)
+                attempt += 1
+                continue
+            # A one-off 500/502/503/504 (seen live 2026-10-14 on PATCH appAssetLibraryImages {"uploaded": true}; the
+            # same PATCH succeeded a minute later). Only requests that are safe to repeat; a POST could create twice.
+            if status in (500, 502, 503, 504) and method in ("GET", "PATCH", "DELETE") and attempt < self.max_retries:
+                wait = min(5 * 2 ** attempt, 60)
+                if self.log:
+                    self.log(f"HTTP {status} from Apple; trying again in {wait:g} s")
                 self.sleep(wait)
                 attempt += 1
                 continue

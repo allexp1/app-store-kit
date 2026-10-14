@@ -195,3 +195,16 @@ def test_upload_failure_raises(tmp_path):
 def test_default_token_lifetime_stays_under_apples_limit_with_clock_skew():
     import asc_api
     assert asc_api.DEFAULT_LIFETIME <= asc_api.MAX_LIFETIME - 60
+
+
+def test_server_error_on_patch_is_retried_but_never_on_post():
+    waits = []
+    err = (500, {}, {"errors": [{"code": "UNEXPECTED_ERROR", "title": "t", "detail": "d"}]})
+    tr = Scripted([err, (200, {}, {"data": {"id": "img", "attributes": {"state": "UPLOAD_COMPLETE"}}})])
+    c = client(tr, sleep=waits.append)
+    r = c.patch("/v1/appAssetLibraryImages/img", {"data": {"type": "appAssetLibraryImages", "id": "img",
+                                                           "attributes": {"uploaded": True}}})
+    assert r["data"]["attributes"]["state"] == "UPLOAD_COMPLETE" and waits == [5]
+    with pytest.raises(api.ASCError) as e:
+        client(Scripted([err, err])).post("/v1/appAssetLibraryImages", {"data": {"type": "appAssetLibraryImages"}})
+    assert e.value.status == 500
