@@ -421,3 +421,56 @@ def test_submit_first_iap_goes_ahead_once_the_purchase_is_in_the_draft(tmp_path,
     code, _ = run(fake, "submit", str(kit), "--yes")
     assert code == 0
     assert fake.writes() == [("POST", "/v1/reviewSubmissionItems"), ("PATCH", "/v1/reviewSubmissions/sub1")]
+
+
+def png(path, color, size=(160, 90)):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, color).save(path, "PNG")
+    return path
+
+
+def test_universal_creative_asset_is_uploaded_once_and_placed_twice(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    png(kit / "creative/en-US/universal.png", "yellow")
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "media")
+    plan = (kit / "connect-plan.md").read_text()
+    assert "Header" in plan and "Search results" in plan
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 0, capsys.readouterr().out
+    creative = [i for i in fake.of_type("appAssetLibraryImages") if i["attributes"]["category"] == "CREATIVE_ASSETS"]
+    assert len(creative) == 1
+    placed = {p["attributes"]["placementType"]: p for p in fake.of_type("appAssetLibraryPlacements")
+              if p["attributes"]["placementGroup"] == "DEFAULT_PROFILE"}
+    assert set(placed) == {"PRODUCT_PAGE_HEADER_ASSET", "APP_STORE_SEARCH_RESULTS_ASSET"}
+    assert {p["relationships"]["image"]["data"]["id"] for p in placed.values()} == {creative[0]["id"]}
+    assert not any(o["attributes"]["placementGroup"] == "DEFAULT_PROFILE"
+                   for o in fake.of_type("appAssetLibraryPlacementOrderingRequests"))
+    steps = yaml.safe_load((kit / "connect-progress.yaml").read_text())["steps"]
+    assert "version/header-and-search-results" in steps
+    run(fake, "plan", str(kit), "--only", "media")
+    assert json.loads((kit / "connect-plan.json").read_text())["items"] == []
+
+
+def test_header_file_overrides_universal_for_the_header_only(tmp_path):
+    kit = make_kit(tmp_path)
+    png(kit / "creative/en-US/universal.png", "yellow")
+    png(kit / "creative/en-US/header.png", "purple", size=(210, 90))
+    assert sync.local_creative(sync.Kit(kit), "en-US") == {
+        "PRODUCT_PAGE_HEADER_ASSET": kit / "creative/en-US/header.png",
+        "APP_STORE_SEARCH_RESULTS_ASSET": kit / "creative/en-US/universal.png"}
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "media")
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 0
+    assert len([i for i in fake.of_type("appAssetLibraryImages")
+                if i["attributes"]["category"] == "CREATIVE_ASSETS"]) == 2
+
+
+def test_creative_groups_come_from_the_ref_data_not_a_constant():
+    assert sync.creative_groups(FakeASC().refdata) == {"PRODUCT_PAGE_HEADER_ASSET": "DEFAULT_PROFILE",
+                                                       "APP_STORE_SEARCH_RESULTS_ASSET": "DEFAULT_PROFILE"}
+    # the DEFAULT_PROFILE group (platform ANY) never becomes a screenshot group
+    assert "DEFAULT" not in sync.placement_groups(FakeASC().refdata)

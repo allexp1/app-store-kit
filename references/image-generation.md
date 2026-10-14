@@ -29,6 +29,8 @@ After saving, list the files with their pixel sizes. Do nothing else."
 6. **No documents from the generator.** No boarding passes, receipts or IDs. A shopping list or recipe is *designed* (HTML or Figma) and marked SAMPLE.
 7. **Coherent metadata.** Each photo gets plausible EXIF dates and places that fit its story, and sizes that match a phone (crop or upscale as needed).
 8. **Content only.** Generated images appear *inside* the app's real screens, never as fake UI (2.3.3, 2.3.7).
+9. **No Apple products and nothing above 4+.** Never generate iPhones, iPads, Macs or other Apple devices: the marketing guidelines forbid illustrations, 3D renderings and simulations of Apple products (https://developer.apple.com/app-store/marketing/guidelines/, read 2026-10-14). Every store asset must suit a 4+ rating (2.3.8; https://developer.apple.com/app-store/asset-best-practices/).
+10. **App icons are not generated here.** The HIG asks for simple illustrations rather than photos, layered in Icon Composer, with no Apple hardware replicas (https://developer.apple.com/design/human-interface-guidelines/app-icons). See `apple-specs.md` › App icon.
 
 Example anchor prompt that worked:
 > Photorealistic casual smartphone photo from a fictional adult's camera roll. Their scruffy tan dog with a plain
@@ -61,4 +63,4 @@ Only `approved: true` files go into the app's screenshot scenes. Hand the manife
 
 - **IAP promotional image:** 1024 × 1024, RGB, flattened, no rounded corners. Only needed if the IAP is promoted.
   Generate the background if you like, but compose the final image in HTML or Figma, and run it through `validate_kit.py` (`KIT/iap/<product_id>/promo.png`).
-- **In-app event art:** same rules. No text baked in by the generator.
+- **In-app event art:** same rules. No text baked in by the generator. Sizes for event cards (16:9) and event details (9:16): `creative-assets.md`.

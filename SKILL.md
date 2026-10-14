@@ -82,7 +82,9 @@ kit/private.yaml               GITIGNORED: review_contact.phone (+ demo account,
 kit/frames.yaml                story: captions per locale + which capture per slot (templates/frames.example.yaml)
 kit/captures/<locale>/<device>/*.png        raw simulator captures
 kit/screenshots/<locale>/<slot>/NN-id.png   final, validated, alpha-free
-kit/previews/<locale>/<slot>/*.mov|mp4      optional
+kit/previews/<locale>/<slot>/*.mov|mp4      optional; a preview plays BEFORE the screenshots, so it is the first screen
+kit/creative/<locale>/universal.png         header + search-results asset, 5244×2950 (iOS/iPadOS 27+); header.* / search.*
+                                            override one placement (references/creative-assets.md)
 kit/iap/<product_id>/promo.png              optional (only if promoted)
 kit/samples/                   generated sample library + manifest.yaml
 kit/READINESS.md   kit/ACCOUNT.md   kit/SUBMIT.md
@@ -128,10 +130,17 @@ kit/release-history.yaml       version, build, date and commit of each release (
   - privacy-label answers per data type (`references/privacy-labels.md`). Read the archive's **Xcode › Organizer › Generate Privacy Report**, because SDK manifests count;
   - `connect.yaml`: age-rating answers, content rights, export compliance, availability, release option and the other non-metadata answers (see `references/app-store-connect-fields.md`);
   - review notes (template in `references/review-guidelines.md`), which describe the **release-build** path to sample content and the sandbox purchase.
+- Review notes describe each feature specifically: generic notes are rejected under 2.3.1(a).
 - The human approves the copy.
 
 **4. Story.**
 - 6–8 frames, one benefit each. The first three carry the pitch. Light frames first, then one dark (`references/story.md`).
+- Store images never show prices, URLs, ©, Apple recognitions (Editor's Choice, App of the Day, Apple Design
+  Award) or other platforms' logos, and stay 4+. The status bar shows full signal, Wi-Fi and battery (Apple's
+  marketing rule); 9:41 is the house preference.
+- If the app's core action is a gesture (swipe, drag, pinch), the first frame shows it **in motion**: capture the
+  app mid-gesture (tilt, stamp, colour wash, next item underneath), not at rest, and make the swipe the app preview,
+  which plays first. A resting screen with buttons doesn't say "swipe".
 - Show 2–3 visual directions side by side and let the human pick one before producing every size.
 
 **5. Capture.** Use `scripts/capture.sh` per screen, device, locale and appearance:
@@ -158,17 +167,25 @@ Always strip alpha afterwards. Keep the other renderer as a cross-check.
 - By eye: the status bar reads 9:41, captions sit inside the safe area, wrapping works in every locale.
 
 **8. Extras** (off the critical path; ship after the required screenshots and metadata):
-- app preview (15–30 s, 886 × 1920 iPhone / 1200 × 1600 iPad; Remotion or screen recordings) checked with `scripts/preview_check.py`;
+- app preview (15–30 s, 886 × 1920 iPhone / 1200 × 1600 iPad; Remotion or screen recordings) checked with `scripts/preview_check.py`.
+  A preview with the screenshots' aspect ratio plays first; one with a different ratio goes to "A Closer Look".
+  Pick the poster frame before submitting: it can't be changed after approval;
 - the IAP promo image;
+- the header and search-results asset (`references/creative-assets.md`): one 5244×2950 universal PNG, key content
+  in Apple's art safe area, rendered with `scripts/render_creative.py` from `templates/creative-universal.html`;
 - the website App Store badge (Apple's artwork, black by default, at least 40 px high) and the Smart App Banner once the app has an ID;
-- a press zip.
+- a press zip;
+- after launch, optionally: custom product pages (up to 70, each with keywords and a deep link) and product page
+  optimization (one test at a time, up to 3 treatments, 90 days; alternate icons must be in the binary). See
+  `references/apple-specs.md`.
 
 Generated imagery follows `references/image-generation.md`, with a provenance manifest.
 
 **9. Hand-off.** Write the four outputs, plus the checklist:
 - **Assets:** everything under `kit/` that passed validation.
 - **`kit/READINESS.md`**: the binary readiness gate. Each item is pass, fail or unknown, with evidence:
-  - archive signing; the app extensions build and are embedded; the icon; version and build numbers higher than the last upload; the SDK minimum Apple currently requires; TestFlight install works;
+  - archive signing; the app extensions build and are embedded; the icon (an Icon Composer `.icon` checked in its default, dark, clear and tinted appearances; the system makes any that are missing; Icon Composer needs macOS Tahoe 26.4 or later); version and build numbers higher than the last upload; the SDK minimum Apple currently requires; TestFlight install works;
+  - the build shows Complete in App Store Connect (Failed: the build number can be reused; more than 24 h in Processing: Feedback Assistant); no 200 MB over-the-air download warning unless expected;
   - every URL returns 200 with real content; the privacy policy is reachable from inside the app and names every SDK;
   - privacy labels match the privacy report; `NSUserTrackingUsageDescription` exists if anything tracks;
   - the IAP was checked in sandbox and TestFlight: product ID, price, restore, and the purchased effect (for example ads gone). The IAP is submitted together with the version;
@@ -342,6 +359,7 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/lint_metadata.py` | limits (chars or bytes as Apple counts them), keyword hygiene, prices, trademarks, other platforms, unbacked claims, URLs |
 | `scripts/validate_kit.py` | asset validation against the frozen `rules.json`; `--fix` strips alpha; `--report` writes the missing-per-locale table |
 | `scripts/preview_check.py` | ffprobe checks for app previews |
+| `scripts/render_creative.py` | `HTML --out PNG [--kind universal\|header\|search] [--set NAME=FILE] [--guides JPG]`: header / search-results asset, RGB, plus a preview with Apple's safe areas |
 | `scripts/connect_guide.py` | `KIT` → `CONNECT-GUIDE.md` + `connect-guide.html` (+ `connect-guide.private.html` when `private.yaml` exists); reads `connect-progress.yaml`; `--check` lists steps needing update; `--init-progress`; exit 1 on a text over its limit |
 | `scripts/precheck.py` | `PROJECT [--kit KIT] [--json] [--strict] [--check-urls]`: the code against Apple's rules (`references/precheck-rules.md`) → `KIT/PRECHECK.md`; exit 2 blocker, 1 likely rejection, 0 otherwise; Semi checks go to "For Claude to judge" |
 | `scripts/status_board.py` | `KIT [--print]` → `KIT/STATUS.md` from progress, PRECHECK.md, connect-plan.json and connect-live.json; the "Next" line |
@@ -369,4 +387,6 @@ Run the tests with `python3 -m pytest` in this folder.
 - `references/asc-api.md`: App Store Connect API 4.5.1: auth, limits, the App Asset Library upload, versions, IAP, submission, release, and the gaps
 - `references/precheck-rules.md`: the pre-check catalogue (id, guideline, severity, detect mode, source); precheck.py reads it at runtime
 - `references/localization-and-updates.md`: Apple's 50 store locales, byte limits, fallbacks, What's New and update rules
+- `references/creative-assets.md`: header and search-results assets: sizes, Apple's Figma safe areas, rules, the
+  universal asset, the API (category CREATIVE_ASSETS, DEFAULT_PROFILE)
 - `references/person-and-browser-steps.md`: the ✋ routine (drive Chrome to the button, outline it, wait for "done") and the 🌐 steps the API can't do

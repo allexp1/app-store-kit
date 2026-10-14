@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Universal creative asset (header + search results), 5244x2950. A starting point, not a rule: one clear idea,
+     the app's real interface in Apple's art safe area (x 1921-3323, y 660-1622), supporting art around it that may
+     be cropped. Two coloured halves and three cards a side tell a two-way story (e.g. delete / keep);
+     change it to fit the app. No text by default: text is optional, must be localized, and must not describe. -->
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}
+body{margin:0}
+.frame{position:relative;width:5244px;height:2950px;overflow:hidden;background:{{INK}}}
+.half{position:absolute;top:0;bottom:0;width:50%}
+.l{left:0;background:{{LEFT_BG}}}.r{right:0;background:{{RIGHT_BG}}}
+.card{position:absolute;width:640px;height:853px;border-radius:56px;border:18px solid {{PAPER}};
+  background:#ddd center/cover;box-shadow:0 40px 90px rgba(0,0,0,.28)}
+.badge{position:absolute;width:190px;height:190px;border-radius:50%;display:grid;place-items:center;
+  border:14px solid {{PAPER}};box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.badge img{width:96px;height:96px}
+.lb{background:{{LEFT_BG}}}.rb{background:{{RIGHT_BG}}}
+/* The device: its key content (here the photo card of a 1206x2622 capture) lands in the art safe area. */
+.phone{position:absolute;left:2224px;top:382px;padding:26px;border-radius:170px;background:{{INK}};
+  box-shadow:0 60px 140px rgba(0,0,0,.35)}
+.phone img{display:block;width:748px;height:auto;border-radius:144px}
+</style></head><body>
+<div class="frame">
+  <div class="half l"></div><div class="half r"></div>
+  <div class="card" style="left:300px;top:760px;transform:rotate(-16deg);background-image:url('{{LEFT_1}}')"></div>
+  <div class="card" style="left:860px;top:1180px;transform:rotate(-9deg);background-image:url('{{LEFT_2}}')"></div>
+  <div class="card" style="left:1330px;top:560px;transform:rotate(-5deg);background-image:url('{{LEFT_3}}')"></div>
+  <div class="badge lb" style="left:1700px;top:470px"><img alt="" src="{{LEFT_ICON}}"></div>
+  <div class="card" style="left:3274px;top:560px;transform:rotate(5deg);background-image:url('{{RIGHT_1}}')"></div>
+  <div class="card" style="left:3744px;top:1180px;transform:rotate(9deg);background-image:url('{{RIGHT_2}}')"></div>
+  <div class="card" style="left:4304px;top:760px;transform:rotate(16deg);background-image:url('{{RIGHT_3}}')"></div>
+  <div class="badge rb" style="left:3354px;top:470px"><img alt="" src="{{RIGHT_ICON}}"></div>
+  <div class="phone"><img alt="" src="{{SCREEN}}"></div>
+</div>
+</body></html>

@@ -265,6 +265,21 @@ def privacy_rows(kit):
     return collects, rows
 
 
+def creative_files(kit, locale):
+    """[(tab, file name)] for KIT/creative/<locale>/: universal fills both tabs, header/search override one."""
+    root = kit / "creative" / locale
+    if not root.is_dir():
+        return []
+    names = {f.stem.lower(): f.name for f in sorted(root.iterdir())
+             if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".mp4", ".mov", ".m4v")}
+    out = []
+    for tab, own in (("Header", "header"), ("Search Results", "search")):
+        name = names.get(own) or names.get("universal")
+        if name:
+            out.append((tab, name))
+    return out
+
+
 def screenshot_sets(kit, locale, rules):
     base = kit / "screenshots" / locale
     labels = {k: v.get("label", k) for k, v in (rules.get("screenshots", {}).get("slots") or {}).items()}
@@ -552,6 +567,11 @@ def build(kit: pathlib.Path, locale: str | None, rules: dict, private=None):
     v_steps.append(Step("App Previews and Screenshots", [
         Field(f"{label} tab", f"{len(files)} files from {folder}/, in this order: {', '.join(files)}", "choose")
         for label, folder, files in sets] or [Field("Screenshots", "none found in screenshots/", "choose", judgement=True)]))
+    creative = creative_files(kit, locale)
+    if creative:
+        v_steps.append(Step("Header and Search Results", [
+            Field(f"{tab} tab › Upload", f"creative/{locale}/{name}", "choose") for tab, name in creative],
+            note="Shown on iOS and iPadOS 27 and later. Check it with the Preview button before Save."))
     v_steps.append(Step("Product page text", [
         Field("Promotional Text", meta.get("promotional_text"), limit=lim.get("promotional_text")),
         Field("Description", meta.get("description"), limit=lim.get("description")),

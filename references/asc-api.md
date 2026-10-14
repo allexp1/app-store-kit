@@ -293,6 +293,12 @@ Apple has no worked example for a plain .ipa. When an `ASSET_DESCRIPTION` or `AS
 
 **Recommendation:** use the CLI tools below as the primary path and REST as optional/experimental.
 
+**Build facts from Help (read 2026-10-14)**, https://developer.apple.com/help/app-store-connect/manage-builds/view-builds-and-metadata :
+- The web statuses are Processing, Failed and Complete. After a **Failed** upload the same build number can be reused.
+- Processing for more than 24 hours means something is wrong: file Feedback Assistant (Developer Tools & Resources › TestFlight).
+- A yellow warning (and an email) appears when a device variant exceeds the **200 MB** over-the-air download limit.
+- Complete builds can still carry warnings; read `warnings` on the `buildUploads` state before the next upload.
+
 **Recommended commands (verified against local Xcode 27.0 / altool 27.0.5 `--help`)**
 
 ```sh
@@ -336,7 +342,7 @@ Notes:
 | Reset rating summary | **NO** | — | Browser. |
 | Apple silicon Mac / Vision Pro store availability of iOS apps | **NO** | — | Browser. |
 | First IAP or subscription submission with the first binary | **NO** (Apple's docs) | — | Person selects it on the version page. |
-| Swapping header/search-results assets on an already-live version ("Publish" without a new version) | Not documented. Placements on approved parents return 409. | — | Browser (UNCONFIRMED whether the API can do it). |
+| Swapping header/search-results assets on an already-live version ("Publish" without a new version) | Not documented. Placements on approved parents return 409. | — | Browser (UNCONFIRMED whether the API can do it). The Help page (read 2026-10-14) documents the UI: live version › Header and Search Results › Header or Search Results › **Browse Assets** › an **approved** asset › **Next** › **Publish**. https://developer.apple.com/help/app-store-connect/manage-app-information/manage-your-app-store-assets |
 
 ---
 
@@ -376,6 +382,8 @@ Notes:
 ---
 
 ## 13. WWDC26 (June 2026) App Store Connect news and API coverage
+
+Help pages read 2026-10-14 add: creative assets are optional and separate from screenshots, previews, IAP images and editorial artwork; they show on iOS/iPadOS 27 or later; an asset can be submitted standalone only after the app has an approved version (the first time it goes with the first version); and a standalone asset is reviewed against the app's latest version. Asset statuses in the web UI: Uploading, Processing, Prepare for Submission, Ready for Review, Waiting for Review, In Review, Accepted, Approved, Rejected, Archived (https://developer.apple.com/help/app-store-connect/reference/app-information/app-store-asset-statuses). The product page optimization page says PPO tests app icons, screenshots and previews; the asset best-practices page adds header visuals.
 
 | Feature | What it is | API coverage | Source |
 |---|---|---|---|

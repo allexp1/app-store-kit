@@ -179,6 +179,51 @@ The old "Does this app use the Advertising Identifier (IDFA)?" question is gone:
 `AppStoreVersion.usesIdfa` is marked **deprecated**, and no current help page mentions it. Tracking is now
 declared in App Privacy (Device ID › tracking) and in the app's App Tracking Transparency prompt.
 
+### 6a. Previews, screenshots and creative assets: where they are managed (read 2026-10-14)
+
+Source: Help: [Manage your App Store assets](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-your-app-store-assets),
+[Submit assets from Asset Library](https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-assets-from-asset-library),
+[App Store asset statuses](https://developer.apple.com/help/app-store-connect/reference/app-information/app-store-asset-statuses).
+
+| Place | What you can do |
+|---|---|
+| **Product Page Information** (version page, Custom Product Pages, Product Page Optimization) | upload, sort, set or remove placements, **Browse Assets**, set a poster frame; scoped to that version, page or treatment |
+| **Media Manager** (**View All Sizes in Media Manager**) | per device size and localization: add from Asset Library, reorder, remove placements, poster frames; also where iMessage and watchOS screenshots and scaled sizes are managed |
+| **Asset Library** (sidebar) | upload (+ › **Upload Creative Assets** or **Previews and Screenshots**), name an asset (internal only), see **Works With** and **Recent Usage**, set a poster frame, delete, archive, filter by Type, Status, Format |
+
+- Roles: managing assets needs Account Holder, Admin, App Manager or **Marketing**; submitting from Asset Library needs Account Holder, Admin or App Manager.
+- Upload or edit previews and screenshots only while the version is Prepare for Submission, Invalid Binary, Rejected, Metadata Rejected or Developer Rejected.
+- Removing a screenshot or preview also removes it from every display size that uses the scaled version. Removing it from Product Page Information keeps it in Asset Library.
+- A poster frame applies everywhere the asset is used, and **can't be edited after the asset is approved**.
+- Delete is possible only while the asset is **Prepare for Submission**. Archived assets can't be used in new placements; **Unarchive Asset** restores one.
+- Asset statuses: Uploading › Processing › Prepare for Submission › Ready for Review › Waiting for Review › In Review › Accepted (others in the same submission still rejected) / Approved / Rejected; Archived (replaced by a newer version's asset; hidden unless filtered).
+- First version: assets must go in the same submission as the first app version. After an approved version, assets can be submitted standalone (**Edit** › select › **Add for Review** › existing or new draft › **Submit for Review**); they are reviewed against the latest version of the platform you pick. Assets assigned to a version, custom product page, PPO test or in-app event are reviewed with it and can't be submitted separately.
+- **Header and Search Results** tab (iOS/iPadOS 27 or later): **Header** or **Search Results** › drag in or **Browse Assets** › **Save**. "Use header asset in search results" works only for a universal asset. **Preview** shows iPhone and iPad, orientations and languages. They go live when the version is released. On the live version, swap in an approved asset with **Browse Assets** › **Next** › **Publish** (no new version). **Delete** removes it from the placement, not from Asset Library. Specs: `creative-assets.md`.
+
+### 6b. Custom product pages and product page optimization (read 2026-10-14)
+
+| Item | Limit / rule | Source |
+|---|---|---|
+| Custom product pages | up to **70** additional pages (iPhone and iPad); vary screenshots, promotional text and previews; start blank or from a copy of the default page; fully localizable; work for pre-order apps | https://developer.apple.com/app-store/custom-product-pages/ |
+| CPP keywords | assign keywords so the page appears in search for them instead of the default page; each keyword combination must be unique to one page | same |
+| CPP deep link | one per page; opens a place in the app; iOS/iPadOS 18 or later | same |
+| CPP review | metadata goes to review, independent of an app update; can be automated with the API | same |
+| CPP URL | the default product page URL plus a product page ID parameter; ad networks pass it as `customProductPageIdentifier` (SKOverlay) or `SKStoreProductParameterCustomProductPageIdentifier` | same |
+| PPO test | **one** test at a time, up to **3 treatments** against the original, for up to **90 days**; reference name up to **64** characters; choose traffic share; can't be changed once started | https://developer.apple.com/app-store/product-page-optimization/ |
+| PPO elements | app icon, screenshots, previews (and header visuals, per asset best practices); shown on iOS/iPadOS 15 or later | same; https://developer.apple.com/app-store/asset-best-practices/ |
+| PPO review | new treatment metadata must be approved before the test starts. Alternate icons must all be in the published binary; tests without alternate icons can be submitted without a new version | same |
+| PPO results | in App Analytics; wait for at least **90% confidence** before applying a treatment; applying one ends the test; an applied alternate icon must ship in the next version | same |
+
+### 6c. Build metadata (TestFlight › a build › Build Metadata) (read 2026-10-14)
+
+Source: Help: [View builds and metadata](https://developer.apple.com/help/app-store-connect/manage-builds/view-builds-and-metadata).
+
+- Roles: Account Holder, Admin, App Manager or Developer. Some builds may disappear after the app is released.
+- **App File Sizes**: install size (also shown on the product page) and download size per device variant. A yellow warning appears, plus an email, if any variant exceeds the **200 MB over-the-air download limit**. The final size after DRM can be larger and can't be known in advance.
+- **Build Uploads** statuses: **Processing**, **Failed**, **Complete** (email for each). A Failed upload's build number **can be reused**. Processing for more than **24 hours** means a problem: file Feedback Assistant (Developer Tools & Resources › TestFlight) or contact Apple. Complete can still carry warnings; read them before the next upload.
+- Device requirements: Minimum iOS version = `MinimumOSVersion`; the minimum macOS is computed by Apple.
+- dSYM download exists only for old bitcode builds; since Xcode 14 there is no bitcode and no dSYM here.
+
 ## 7. In-App Purchases (sidebar › Monetization › In-App Purchases › +)
 
 Seen on the live page 2026-10-14, top to bottom: Status, Product ID, Reference Name (64), Apple ID, Family Sharing (Turn On), Availability, Price Schedule (+, Base Country or Region, Prices), Offer Codes, **Display Name and Description** (Add), **Image (Optional)** 1024×1024, **Tax Category** (Edit; "Match to parent app"), **Review Information** (Screenshot, Review Notes (Optional) 4000), Delete This In-App Purchase. Buttons: Save, Add for Review. A banner says the first non-consumable must be submitted with a new app version. The help pages call the name section "App Store Localization"; the page says "Display Name and Description".
@@ -361,7 +406,12 @@ Help pages, prefix `https://developer.apple.com/help/app-store-connect/`:
 `configure-in-app-purchase-settings/turn-on-family-sharing-for-in-app-purchases`,
 `test-a-beta-version/provide-test-information`.
 
+Also read 2026-10-14: `manage-submissions-to-app-review/submit-assets-from-asset-library`,
+`reference/app-information/app-store-asset-statuses`, `reference/app-information/creative-assets-specifications`,
+`manage-builds/view-builds-and-metadata`.
+
 Other Apple pages:
+- https://developer.apple.com/app-store/custom-product-pages/ and https://developer.apple.com/app-store/product-page-optimization/
 - https://developer.apple.com/app-store/app-privacy-details/
 - https://developer.apple.com/documentation/bundleresources/information-property-list/itsappusesnonexemptencryption
 - App Store Connect API attribute pages, prefix `https://developer.apple.com/documentation/appstoreconnectapi/`:

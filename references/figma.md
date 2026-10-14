@@ -44,6 +44,7 @@ Known differences from the HTML render:
   4. set the caption font.
 - Whether that library carries Apple's **photographic product bezels** (iPhone 18 and Duo, published 18 September 2026) is unverified.
   Those bezels are a separate download from <https://developer.apple.com/design/resources/> that **the human makes** and accepts the licence for. Never download them automatically.
+- Apple's marketing guidelines (read 2026-10-14, https://developer.apple.com/app-store/marketing/guidelines/) govern how a bezel may be used: as is, never tilted, cropped, obstructed, flipped, shadowed or given reflections; captions beside the device, not on it; at least 200 px tall; never a 3D render or a drawn imitation of an Apple device; no competing products in the same frame. If a frame needs a perspective or 3D look, drop the device and show the screen flat instead.
 - Edits made in Figma come back to `frames.yaml` only as a deliberate step (`get_design_context` → update YAML), never silently.
 
 ## 3. Export at exact size

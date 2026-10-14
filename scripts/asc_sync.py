@@ -69,6 +69,11 @@ SLOT_CLASS = {
 }
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
 VIDEO_EXT = (".mov", ".mp4", ".m4v")
+# Creative assets (header + search results, iOS/iPadOS 27+): KIT/creative/<locale>/<name>.png|jpg|mp4|mov.
+# "universal" fills both placements; "header" / "search" override one of them (apple-specs.md › Creative assets).
+HEADER, SEARCH = "PRODUCT_PAGE_HEADER_ASSET", "APP_STORE_SEARCH_RESULTS_ASSET"
+CREATIVE_NAMES = {"universal": (HEADER, SEARCH), "header": (HEADER,), "search": (SEARCH,)}
+CREATIVE_LABEL = {HEADER: "Header", SEARCH: "Search results"}
 
 FREQ_KEYS = {"alcoholTobaccoOrDrugUseOrReferences", "contests", "gamblingSimulated", "gunsOrOtherWeapons",
              "medicalOrTreatmentInformation", "profanityOrCrudeHumor", "sexualContentGraphicAndNudity",
@@ -208,6 +213,21 @@ def local_slots(kit, locale):
     return out, unmapped
 
 
+def local_creative(kit, locale):
+    """{placementType: file path} for one locale's creative assets. A specific file beats "universal"."""
+    root = kit.path / "creative" / locale
+    out = {}
+    if not root.is_dir():
+        return out
+    files = {f.stem.lower(): f for f in sorted(root.iterdir())
+             if f.is_file() and f.suffix.lower() in IMAGE_EXT + VIDEO_EXT}
+    for name in ("universal", "header", "search"):
+        if name in files:
+            for ptype in CREATIVE_NAMES[name]:
+                out[ptype] = files[name]
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------- live
 def get_one(client, path, params=None):
     """The `data` of a to-one GET, or None when there is none (404 or data: null)."""
@@ -269,6 +289,27 @@ def placement_groups(refdata):
                     plat in ("IOS", "IPHONE_OS", "IPAD_OS", "IPHONE_APP_STORE", "IPAD_APP_STORE"):
                 if not gid.startswith("IMESSAGE"):
                     found.setdefault(cls, gid)
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(refdata)
+    return found
+
+
+def creative_groups(refdata):
+    """{placementType: placementGroup id} for the header and search-results placements, from the specMappings of
+    appAssetLibraryRefData placementTypes (live 2026-10-14: DEFAULT_PROFILE, platform ANY)."""
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            pid = node.get("placementTypeId")
+            if pid in (HEADER, SEARCH):
+                for m in node.get("specMappings") or []:
+                    if isinstance(m, dict) and m.get("placementGroupId"):
+                        found.setdefault(pid, m["placementGroupId"])
             for v in node.values():
                 walk(v)
         elif isinstance(node, list):
@@ -347,6 +388,13 @@ def read_live(client, kit, areas):
             except ASCError as e:
                 live["warnings"].append(f"could not read appAssetLibraryRefData: {e}")
                 live["groups"] = {}
+            if any(local_creative(kit, loc) for loc in kit.locales):
+                try:
+                    live["creative_groups"] = creative_groups(client.get(
+                        "/v1/appAssetLibraryRefData", {"filter[placementTypes]": f"{HEADER},{SEARCH}"}))
+                except ASCError as e:
+                    live["warnings"].append(f"could not read the creative asset ref data: {e}")
+                    live["creative_groups"] = {}
     if "build" in areas and kit.build:
         live["builds"] = client.get_all("/v1/builds", {"filter[app]": aid, "filter[version]": kit.build,
                                                        "filter[preReleaseVersion.version]": kit.version,
@@ -806,6 +854,36 @@ def plan_media(P):
                            + (f"; remove {len(removes)}" if removes else "")}])
     if not any_local:
         P.warnings.append("no screenshots found under screenshots/<locale>/<slot>/")
+    plan_creative(P, assets_map)
+
+
+def plan_creative(P, assets_map):
+    """Header and search-results assets: one placement each per localization (maxCount 1)."""
+    kit, live = P.kit, P.live
+    cgroups = live.get("creative_groups") or {}
+    for loc in kit.locales:
+        wanted = local_creative(kit, loc)
+        if not wanted:
+            continue
+        cur_placements = (live.get("placements") or {}).get(loc) or []
+        for ptype, f in wanted.items():
+            label = CREATIVE_LABEL[ptype]
+            group = cgroups.get(ptype)
+            if not group:
+                P.warnings.append(f"{loc} {label}: no placement group for {ptype} in appAssetLibraryRefData; skipped")
+                continue
+            cur = group_placements(cur_placements, group, ptype)
+            rows, removes = diff_slot([f], cur, live.get("assets"), assets_map)
+            rel_file = pathlib.Path(f).relative_to(kit.path).as_posix()
+            P.media_rows.append((loc, label, rel_file, rows[0]["action"]))
+            for r in removes:
+                P.media_rows.append((loc, label, f"placement {r['placement_id']}", "remove"))
+            if rows[0]["action"] != "unchanged" or removes:
+                P.add("media", "media_slot", f"{label} asset ({loc})", locale=loc, slot=label.lower(),
+                      display_class="DEFAULT", group=group, placement_type=ptype, category="CREATIVE_ASSETS",
+                      rows=[{**rows[0], "file": rel_file}], removes=removes, changes=[
+                          {"locale": loc, "field": label, "old": f"{len(cur)} live",
+                           "new": f"{pathlib.Path(f).name} {rows[0]['action']}"}])
 
 
 def iap_review_file(kit, pid):
@@ -1037,6 +1115,7 @@ class Ctx:
         self.progress = {}   # step key → {"live": {...}, "note": str}
         self._vlocs = None
         self._library = None
+        self.creative_uploads = {}
 
     def need_version(self):
         if not self.version_id:
@@ -1284,10 +1363,10 @@ def wait_ready(ctx, path, ok=("PREPARE_FOR_SUBMISSION",)):
     raise SyncError(f"{path} still processing after {ctx.poll_tries} checks")
 
 
-def upload_library_asset(ctx, path, video=False):
+def upload_library_asset(ctx, path, video=False, category="APP_SCREENSHOTS_AND_PREVIEWS"):
     """Asset Library reserve → PUT → PATCH uploaded → poll (asc-api.md §4a). Returns the asset id."""
     typ = "appAssetLibraryVideos" if video else "appAssetLibraryImages"
-    a = {"fileName": path.name, "fileSize": path.stat().st_size, "category": "APP_SCREENSHOTS_AND_PREVIEWS"}
+    a = {"fileName": path.name, "fileSize": path.stat().st_size, "category": category}
     if video:
         a["previewFrameTimeCode"] = "00:00:03:00"
     r = ctx.client.post(f"/v1/{typ}", body(typ, a, relationships={"assetLibrary": ref("appAssetLibraries",
@@ -1308,7 +1387,9 @@ def op_media_slot(ctx, it):
     rows, removes = diff_slot(files, current, live_assets, ctx.assets)
     if all(r["action"] == "unchanged" for r in rows) and not removes:
         return
-    video = it["placement_type"] == "APP_PREVIEW"
+    category = it.get("category") or "APP_SCREENSHOTS_AND_PREVIEWS"
+    video = it["placement_type"] == "APP_PREVIEW" or (category == "CREATIVE_ASSETS"
+                                                      and files[0].suffix.lower() in VIDEO_EXT)
     for r in removes + [r for r in rows if r["action"] == "replace"]:
         ctx.client.delete(f"/v1/appAssetLibraryPlacements/{r['placement_id']}")
     ordered = []
@@ -1317,7 +1398,12 @@ def op_media_slot(ctx, it):
             ordered.append(r["placement_id"])
             continue
         path = pathlib.Path(r["file"])
-        aid = upload_library_asset(ctx, path, video)
+        # A universal creative asset is uploaded once and placed as both header and search results.
+        aid = ctx.creative_uploads.get(r["sha256"]) if category == "CREATIVE_ASSETS" else None
+        if not aid:
+            aid = upload_library_asset(ctx, path, video, category)
+            if category == "CREATIVE_ASSETS":
+                ctx.creative_uploads[r["sha256"]] = aid
         p = ctx.client.post("/v1/appAssetLibraryPlacements", body(
             "appAssetLibraryPlacements", {"placementType": it["placement_type"], "placementGroup": it["group"]},
             relationships={("video" if video else "image"): ref("appAssetLibraryVideos" if video
@@ -1326,6 +1412,12 @@ def op_media_slot(ctx, it):
         ordered.append(p["data"]["id"])
         ctx.assets["assets"][aid] = {"sha256": r["sha256"], "file": path.relative_to(kit.path).as_posix(),
                                      "fileSize": r["size"], "locale": it["locale"], "group": it["group"]}
+    if category == "CREATIVE_ASSETS":
+        # One placement per group (maxCount 1): nothing to order.
+        if it["locale"] == kit.primary:
+            ctx.record("version/header-and-search-results",
+                       note=f"{it['slot']}: {pathlib.Path(rows[0]['file']).name} placed")
+        return
     ctx.client.post("/v1/appAssetLibraryPlacementOrderingRequests", body(
         "appAssetLibraryPlacementOrderingRequests", {"placementGroup": it["group"]},
         relationships={"orderedPlacements": [ref("appAssetLibraryPlacements", x) for x in ordered],

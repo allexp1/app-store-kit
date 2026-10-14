@@ -285,3 +285,15 @@ def test_choose_fields_tolerate_live_wording(tmp_path):
     assert cg.Field("Price", "4.99 USD", "choose").matches("2.99 USD") is False
     assert cg.Field("Name", "Pebble", "copy").matches("Pebble (old)") is False
     assert cg.Field("Build › +", "1.0.0 (22)", "choose").matches("1.0.0 (18)") is False
+
+
+def test_header_and_search_results_step_lists_the_creative_files(tmp_path, rules):
+    kit = make_kit(tmp_path)
+    (kit / "creative/en-US").mkdir(parents=True)
+    (kit / "creative/en-US/universal.png").write_bytes(b"x")
+    (kit / "creative/en-US/search.png").write_bytes(b"x")
+    g = cg.build(kit, None, rules)
+    st = next(st for s in g["sections"] for st in s.steps if st.title == "Header and Search Results")
+    assert st.key == "version/header-and-search-results"
+    assert [(f.label, f.value) for f in st.fields] == [("Header tab › Upload", "creative/en-US/universal.png"),
+                                                       ("Search Results tab › Upload", "creative/en-US/search.png")]

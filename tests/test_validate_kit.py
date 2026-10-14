@@ -140,3 +140,30 @@ def test_accepted_sizes_orientation(rules):
     assert (2622, 1206) in vk.accepted_sizes(s["iphone-di-medium"])
     assert (800, 1280) not in vk.accepted_sizes(s["mac"])
     assert (514, 422) not in vk.accepted_sizes(s["watch"])
+
+
+def test_creative_assets_sizes(tmp_path, capsys):
+    kit = kit_with(tmp_path, {("en-US", "iphone-di-medium"): (IPHONE, 3), ("en-US", "ipad-13"): (IPAD, 3)})
+    png(kit / "creative/en-US/universal.png", (5244, 2950))
+    png(kit / "creative/en-US/search.png", (2400, 1600))      # any 3:2 width from 1920 to 3840
+    assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 0
+    png(kit / "creative/en-US/header.png", (3840, 2560))      # 3:2 is for search results, not the header
+    assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 1
+    assert "3840x2560 is not an accepted size for header creative asset" in capsys.readouterr().out
+
+
+def test_creative_universal_png_with_alpha_fails(tmp_path, capsys):
+    kit = kit_with(tmp_path, {("en-US", "iphone-di-medium"): (IPHONE, 3), ("en-US", "ipad-13"): (IPAD, 3)})
+    png(kit / "creative/en-US/universal.png", (5244, 2950), mode="RGBA")
+    assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 1
+    assert "alpha channel present" in capsys.readouterr().out
+
+
+def test_creative_jpeg_is_fine_for_21_9_header_but_not_for_16_9(tmp_path, capsys):
+    kit = kit_with(tmp_path, {("en-US", "iphone-di-medium"): (IPHONE, 3), ("en-US", "ipad-13"): (IPAD, 3)})
+    (kit / "creative/en-US").mkdir(parents=True)
+    Image.new("RGB", (3840, 1646), (10, 180, 100)).save(kit / "creative/en-US/header.jpg", "JPEG")
+    assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 0
+    Image.new("RGB", (5244, 2950), (10, 180, 100)).save(kit / "creative/en-US/search.jpg", "JPEG")
+    assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 1
+    assert "type JPEG, need PNG" in capsys.readouterr().out

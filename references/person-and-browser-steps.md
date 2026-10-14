@@ -55,6 +55,8 @@ Claude never presses these controls, even if the owner asks. Say so plainly and 
 | iPhone/iPad app on Apple silicon Mac and on Apple Vision Pro | …/apps/<id>/distribution/pricing | two checkboxes under the price |
 | Reset the rating summary (updates, optional) | the version page › App Store Version Release | |
 | First in-app purchase: into the same submission as the version (🛑 a yes, it is Add for Review) | …/apps/<id>/distribution/iaps/<iap id> › "Add for Review", then the version page's "Add for Review" | Live 2026-10-14: the version page no longer has an In-App Purchases section; the purchase page says the first non-consumable "must be submitted with a new app version". Both land in one draft; Submit for Review is a separate yes. |
+| Swap the product page header or search-results asset on the **live** version (no new version) | the live version page › Header and Search Results › Header or Search Results › Browse Assets › an approved asset › Next › **Publish** (🛑 a yes: it changes the live page at once) | Help, read 2026-10-14: https://developer.apple.com/help/app-store-connect/manage-app-information/manage-your-app-store-assets . The API route is unconfirmed (placements on approved parents return 409). |
+| Product page **Preview** tool | the version page › Header and Search Results › Preview | shows header, name, description, screenshots and search asset on iPhone and iPad, per orientation and language. UI only. |
 | Other regulations and permits (medical device, China ICP, Vietnam games) | App Information › App Store Regulations & Permits | only when they apply |
 
 If the browser fails two or three times on the same step, hand the step to guide mode: give the owner the values

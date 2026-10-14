@@ -6,6 +6,7 @@ Kit layout (all optional except what you want checked):
   KIT/screenshots/<locale>/<slot>/*.png|jpg   slot ids are the keys of rules.json screenshots.slots
   KIT/previews/<locale>/<slot>/*.mov|mp4|m4v
   KIT/iap/<product_id>/promo.png              in-app purchase promotional image
+  KIT/creative/<locale>/universal|header|search.png|jpg|mp4|mov   header and search-results assets (iOS 27+)
   KIT/frames.yaml                             captions, colours (house-rule checks)
 
 Usage:
@@ -254,6 +255,95 @@ def check_previews(kit, rules, rep):
                     rep.ok(scope, f"{f.name}")
 
 
+# Header and search-results assets, read from appAssetLibraryRefData 2026-10-14 (apple-specs.md › Creative assets).
+# A frozen rules.json may carry its own "creative_assets" block; this is the fallback.
+CREATIVE_DEFAULT = {
+    "images": {
+        "universal": {"sizes": [[5244, 2950]], "formats": ["PNG"]},
+        "header": {"sizes": [[5244, 2950], [3840, 1646]], "formats": ["PNG", "JPEG"], "png_only": [[5244, 2950]]},
+        "search": {"sizes": [[5244, 2950]], "ratio_3x2_widths": [1920, 3840], "formats": ["PNG", "JPEG"],
+                   "png_only": [[5244, 2950]]},
+    },
+    "videos": {
+        "header": {"sizes": [[3840, 1646]], "fps": [30, 60], "seconds": [5, 30]},
+        "search": {"ratio": [3, 2], "widths": [1920, 3840], "fps": [30, 60], "seconds": [5, 30]},
+    },
+}
+
+
+def creative_image_sizes(kind, spec, actual):
+    sizes = {tuple(x) for x in spec.get("sizes", [])}
+    lo_hi = spec.get("ratio_3x2_widths")
+    if lo_hi and actual[0] * 2 == actual[1] * 3 and lo_hi[0] <= actual[0] <= lo_hi[1]:
+        sizes.add(tuple(actual))
+    return sizes
+
+
+def check_creative(kit, rules, rep, fix):
+    root = kit / "creative"
+    if not root.exists():
+        return
+    cr = rules.get("creative_assets") or CREATIVE_DEFAULT
+    for loc in sorted(p for p in root.iterdir() if p.is_dir()):
+        files = [f for f in sorted(loc.iterdir()) if f.is_file() and not f.name.startswith(".")]
+        for f in files:
+            kind = f.stem.lower()
+            scope = f"{loc.name}/creative {kind}"
+            if kind not in ("universal", "header", "search"):
+                if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".mp4", ".mov", ".m4v"):
+                    rep.warn(scope, f"{f.name}: name it universal, header or search; it is not uploaded")
+                continue
+            if f.suffix.lower() in (".mp4", ".mov", ".m4v"):
+                check_creative_video(f, kind, cr["videos"], rep, scope)
+                continue
+            spec = cr["images"][kind]
+            try:
+                with Image.open(f) as im:
+                    actual = im.size
+            except Exception:
+                actual = (0, 0)
+            formats = ["PNG"] if list(actual) in spec.get("png_only", []) else spec["formats"]
+            img_rules = {**rules["screenshots"], "formats": formats, "extensions": None}
+            check_image(f, creative_image_sizes(kind, spec, actual), img_rules, rep, scope, fix,
+                        f"{kind} creative asset")
+
+
+def check_creative_video(f, kind, vspec, rep, scope):
+    if kind == "universal":
+        rep.err(scope, f"{f.name}: Apple has no 16:9 video size; a universal asset is a 5244x2950 image. Use header.mov and search.mov")
+        return
+    spec = vspec[kind]
+    try:
+        import preview_check
+    except ImportError:  # pragma: no cover
+        sys.path.insert(0, str(HERE)); import preview_check
+    try:
+        probe = preview_check.ffprobe(f)
+    except Exception as e:
+        rep.err(scope, f"{f.name}: ffprobe failed ({e})"); return
+    v = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), None)
+    if not v:
+        rep.err(scope, f"{f.name}: no video stream"); return
+    w, h = int(v.get("width", 0)), int(v.get("height", 0))
+    dur = float(probe.get("format", {}).get("duration") or 0)
+    errs = 0
+    if "sizes" in spec and [w, h] not in spec["sizes"]:
+        rep.err(scope, f"{f.name}: {w}x{h}, need " + ", ".join(f"{a}x{b}" for a, b in spec["sizes"])); errs += 1
+    if "ratio" in spec and (w * spec["ratio"][1] != h * spec["ratio"][0]
+                            or not spec["widths"][0] <= w <= spec["widths"][1]):
+        rep.err(scope, f"{f.name}: {w}x{h}, need {spec['ratio'][0]}:{spec['ratio'][1]} from "
+                       f"{spec['widths'][0]} to {spec['widths'][1]} wide"); errs += 1
+    lo, hi = spec["seconds"]
+    if not lo <= dur <= hi:
+        rep.err(scope, f"{f.name}: {dur:.1f} s, need {lo} to {hi} s"); errs += 1
+    if "fps" in spec:
+        fps = preview_check._rate(v.get("avg_frame_rate")) or 0
+        if not any(abs(fps - x) < 0.5 for x in spec["fps"]):
+            rep.err(scope, f"{f.name}: {fps:.2f} fps, need " + " or ".join(map(str, spec["fps"]))); errs += 1
+    if not errs:
+        rep.ok(scope, f"{f.name}: {w}x{h} {dur:.1f} s")
+
+
 def check_iap(kit, rules, rep, fix):
     root = kit / "iap"
     if not root.exists():
@@ -368,6 +458,7 @@ def main(argv=None):
     locales = check_screenshots(kit, rules, rep, families, a.fix, today, missing)
     check_previews(kit, rules, rep)
     check_iap(kit, rules, rep, a.fix)
+    check_creative(kit, rules, rep, a.fix)
     check_frames(kit, rules, rep)
     rep.print()
     if a.report:

@@ -37,7 +37,13 @@ class FakeASC:
                 {"placementProfileGroupId": "IMESSAGE_IPHONE_DYNAMIC_ISLAND_MEDIUM_PROFILE",
                  "platform": "IPHONE_APP_STORE", "displayClassId": "IPHONE_DYNAMIC_ISLAND_MEDIUM_DISPLAY"},
                 {"placementProfileGroupId": "IPAD_13_PROFILE", "platform": "IPAD_APP_STORE",
-                 "displayClassId": "IPAD_13_DISPLAY"}]}}]}
+                 "displayClassId": "IPAD_13_DISPLAY"},
+                {"placementProfileGroupId": "DEFAULT_PROFILE", "platform": "ANY", "displayClassId": "DEFAULT"}],
+            "placementTypes": [
+                {"placementTypeId": "PRODUCT_PAGE_HEADER_ASSET", "acceptsAssetCategories": ["CREATIVE_ASSETS"],
+                 "specMappings": [{"placementGroupId": "DEFAULT_PROFILE", "specs": ["s1", "s2"]}]},
+                {"placementTypeId": "APP_STORE_SEARCH_RESULTS_ASSET", "acceptsAssetCategories": ["CREATIVE_ASSETS"],
+                 "specMappings": [{"placementGroupId": "DEFAULT_PROFILE", "specs": ["s1", "s3"]}]}]}}]}
         self.fail = {}        # (method, path) → (status, code) to return instead
         self.on_create = {}   # type → callback(resource)
 
