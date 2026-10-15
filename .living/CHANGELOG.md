@@ -50,7 +50,7 @@ A refresh that finds nothing still logs `- No changes found`.
 - FIXED (found by the new tests): the sRGB profile written into PNGs carried its creation time, so identical renders differed in bytes (the header date is now zeroed); an unquoted `[PLACEHOLDER]` in YAML became a list and crashed `check` (now a clear error).
 - FIXED (live Design canvas, owner's account, 2026-10-15): the exported canvas loaded, then went blank about 20 s later. Bisecting on the live canvas showed that a single panel survives, but several boards of 3D phones with filters, blend modes and preserve-3d/perspective take the editor's frame down (a drop-shadow blur near 150 px alone was enough on one board). `canvas` now exports flat phones (no filters, blend modes or 3D context, 4 slices), panel artboards that hold only their own column's elements, and half-size screenshot uploads. The full sample (panorama + 6 panels) stays up. references/creative-director.md updated; tests 121 — https://claude.ai (Design canvas type)
 
-## 2026-10-15 (live-run fixes, JetSetAlarm)
+## 2026-10-15 (live-run fixes, JetSetAlarm, 1.5.0)
 - FIXED: Universal creative cards stayed grey — placeholder regex rejected digits ({{LEFT_1}}); render_creative now fails on unknown --set names, missing values and leftover {{…}} — live run
 - FIXED: validate_kit read creative source folders as locales — non-locale folders under creative/ are skipped with a warning; sources belong in kit/creative-src/ — live run
 - FIXED: Precheck UP-18 false positive on generated Info.plist / $(MARKETING_VERSION) — version resolved from build settings (Release first) — live run
