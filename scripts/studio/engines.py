@@ -101,6 +101,36 @@ class E:
             L["shadow"] = shadow
         return L
 
+    def chips(self, panel, *, x=0.06, y=0.4, w=0.88, align="center", anchor="top", style="glass", fill="accent",
+              color="ink", z=None):
+        """The panel's feature chips (storyboard `chips:`) as their own block, or None when it has none."""
+        p = self.sb[panel - 1]
+        if not p.get("chips"):
+            return None
+        L = {"type": "text", "panel": panel, "x": x, "y": y, "w": w, "align": align, "anchor": anchor,
+             "color": color, "chip_style": style, "chip_fill": fill,
+             "items": [{"role": "chips", "copy": f"{p['id']}.chips"}]}
+        if z is not None:
+            L["z"] = z
+        return L
+
+    def stat(self, panel, *, x=0.08, y=0.95, w=0.84, align="start", anchor="bottom", color="ink", accent="accent"):
+        """A stat callout (storyboard `stat:` + `stat_label:`), or None. The spec refuses a stat without evidence."""
+        p = self.sb[panel - 1]
+        if not p.get("stat"):
+            return None
+        items = [{"role": "stat", "copy": f"{p['id']}.stat", "color": accent}]
+        if p.get("stat_label"):
+            items.append({"role": "label", "copy": f"{p['id']}.stat_label", "opacity": 0.85})
+        return {"type": "text", "panel": panel, "x": x, "y": y, "w": w, "align": align, "anchor": anchor,
+                "color": color, "items": items, "gap": 0.006}
+
+    def footnote(self, panel, *, color="ink", top=False):
+        p = self.sb[panel - 1]
+        return {"type": "text", "panel": panel, "x": 0.07, "y": 0.02 if top else 0.988, "w": 0.86,
+                "anchor": "top" if top else "bottom", "align": "start", "color": color, "z": 60,
+                "items": [{"role": "footnote", "copy": f"{p['id']}.footnote", "opacity": 0.72}]}
+
     def dev(self, panel, x, y, w=0.78, rotate=(0, 0, 0), k=0, screen=None, **kw):
         sid = screen or self.screen(panel, k)
         d = {"type": "device", "screen": sid, "x": round(x, 4), "y": round(y, 4), "w": w, "rotate": list(rotate)}
@@ -359,10 +389,166 @@ def illustrated(e: E):
     return {"background": [{"type": "solid", "color": "bg"}], "layers": layers}
 
 
+# ---------------------------------------------------------------- 11. big type
+@engine("big-type", label="Big type", pattern="colour-block panels, oversized headlines, a phone crossing the first seam",
+        type_preset="friendly-consumer",
+        mood="loud and friendly: each panel a saturated colour block, the first headline fills the panel, one phone "
+             "straddles the first seam")
+def big_type(e: E):
+    N = e.N
+    seq = ["accent", "accent"] + ["accent2", "dark", "accent"] * 4
+    bgs = [{"type": "solid", "color": "accent"}]
+    layers = []
+    for i in range(1, N + 1):
+        c = i - 0.5
+        col = seq[i - 1]
+        bgs.append({"type": "panel", "panel": i, "color": col})
+        ink = e.ink_on(col)
+        acc = e.accent_on(col, ("light", "accent2", "accent", "ink") if ink == "light" else ("ink", "dark"))
+        if i == 1:
+            cap = e.cap(1, y=0.05, x=0.07, w=0.88, size=0.18, max_lines=4, color=ink, accent=acc,
+                        kicker=False, sub=True)
+            cap["accent_style"] = "color"
+            layers.append(cap)
+            seam = 1.0 if N > 1 else 0.62
+            layers.append(e.dev(1, seam, 0.9, 0.8, (0, 0, -8), shadow="float", z=12))
+            continue
+        if i == 2:
+            cap = e.cap(2, y=0.06, x=0.12, w=0.82, align="end", color=ink, accent=acc, size=0.13)
+            cap["accent_style"] = "color"
+            layers.append(cap)
+            layers.append(e.dev(2, c + 0.2, 0.9, 0.66, (0, 0, 7), shadow="soft", z=11))
+            continue
+        cap = e.cap(i, y=0.06, x=0.07, w=0.86, align="center", color=ink, accent=acc, size=0.13)
+        cap["accent_style"] = "color"
+        layers.append(cap)
+        layers.append(e.dev(i, c, 0.76, 0.78, (0, 0, 0), shadow="float"))
+    return {"background": bgs, "layers": layers}
+
+
+# ---------------------------------------------------------------- 12. before / after
+@engine("before-after", label="Before / after", pattern="a two-panel contrast story, then proof panels with stat callouts",
+        type_preset="premium-editorial",
+        mood="a story told in contrast: a dim 'before' panel meets a bright 'after' across one phone, then calm "
+             "proof panels pair a small phone with a sourced number")
+def before_after(e: E):
+    N = e.N
+    bgs = [{"type": "solid", "color": "bg"}]
+    layers = []
+    for i in range(1, N + 1):
+        c = i - 0.5
+        if i == 1:
+            bgs.append({"type": "panel", "panel": 1, "color": "dark"})
+            layers.append({"type": "glow", "x": 0.9, "y": 0.75, "r": 0.7, "color": "accent2@0.35"})
+            layers.append(e.cap(1, y=0.06, x=0.09, w=0.82, size=0.16, color="light",
+                                accent=e.accent_on("dark", ("accent2", "accent", "light"))))
+            if N == 1:
+                layers.append(e.dev(1, 0.62, 0.74, 0.76, (0, -12, 0), shadow="float"))
+            continue
+        if i == 2:
+            layers.append({"type": "glow", "x": 1.35, "y": 0.4, "r": 0.8, "color": "accent@0.35"})
+            layers.append(e.cap(2, y=0.06, x=0.09, w=0.82, align="end", size=0.16, color=e.ink_on("bg"),
+                                accent=e.accent_on("bg")))
+            layers.append(e.dev(2, 1.02, 0.76, 0.82, (0, -14, -4), shadow="float", z=12))
+            continue
+        dark = i % 2 == 0
+        col = "dark" if dark else "bg"
+        if dark:
+            bgs.append({"type": "panel", "panel": i, "color": "dark"})
+        ink = e.ink_on(col)
+        layers.append(e.cap(i, y=0.06, x=0.08, w=0.84, align="center", color=ink, accent=e.accent_on(col)))
+        st = e.stat(i, x=0.55, y=0.9, w=0.4, color=ink, accent=e.accent_on(col, ("accent", "accent2", "light", "ink")))
+        if st:
+            layers.append(e.dev(i, c - 0.24, 0.73, 0.4, (0, 0, 0), shadow="soft"))
+            layers.append(st)
+        else:
+            layers.append(e.dev(i, c, 0.72, 0.78, (0, 0, 0), shadow="float"))
+    return {"background": bgs, "layers": layers}
+
+
+# ---------------------------------------------------------------- 13. glass
+@engine("glass", label="Glass", pattern="frosted light panels, feature chips, floating UI cards, a serif accent word",
+        type_preset="modern-tech",
+        mood="soft and current: pale gradient light, glass chips under the headline, a real UI card floating off "
+             "the phone, one word set in italic serif")
+def glass(e: E):
+    N = e.N
+    bgs = [{"type": "linear", "angle": 165, "stops": [["bg", 0], ["bg2", 1]]}]
+    layers = []
+    for i in range(1, N + 1):
+        c = i - 0.5
+        side = 1 if i % 2 else -1
+        layers.append({"type": "glow", "x": c + 0.3 * side, "y": 0.35, "r": 0.75, "color": "accent@0.30"})
+        layers.append({"type": "glow", "x": c - 0.35 * side, "y": 0.85, "r": 0.7, "color": "accent2@0.25"})
+        cap = e.cap(i, y=0.065, x=0.07, w=0.86, align="center", size=0.125 if i == 1 else 0.11,
+                    color=e.ink_on("bg"), accent=e.accent_on("bg"))
+        cap["accent_style"] = "serif"
+        if e.sb[i - 1].get("chips"):
+            cap["items"].append({"role": "chips", "copy": f"{e.sb[i - 1]['id']}.chips"})
+            cap["chip_style"] = "glass"
+        layers.append(cap)
+        layers.append(e.dev(i, c - 0.05 * side, 0.74, 0.74, (4, 10 * side, 2 * side), shadow="soft", glare=0.06))
+        sid, blocks = e.cards_for(i, 1)
+        for b in blocks:
+            layers.append({"type": "card", "screen": sid, "crop": b, "x": c + 0.2 * side, "y": 0.66, "w": 0.6,
+                           "radius": 0.06, "rotate": [0, 0, 0], "shadow": "float", "border": "light@0.9",
+                           "z": 20})
+    return {"background": bgs, "layers": layers}
+
+
+# ---------------------------------------------------------------- 14. sticker pop
+@engine("sticker-pop", label="Sticker pop", pattern="headline words in gradient pills, tilted feature stickers, a big phone",
+        type_preset="friendly-consumer",
+        mood="playful and warm: a sky gradient, the key word set in a bright pill, feature stickers stuck at angles "
+             "around a big phone")
+def sticker_pop(e: E):
+    N = e.N
+    bgs = [{"type": "linear", "angle": 180, "stops": [["accent2", 0], ["bg2", 0.62], ["bg", 1]]}]
+    layers = []
+    for i in range(1, N + 1):
+        c = i - 0.5
+        ink = e.ink_on("accent2")
+        cap = e.cap(i, y=0.055, x=0.07, w=0.86, align="center", size=0.135 if i == 1 else 0.12, color=ink,
+                    sub=False, kicker=False, accent="accent")
+        cap["accent_style"] = "pill"
+        layers.append(cap)
+        ch = e.chips(i, y=0.37, style="sticker", fill="accent", color="ink", z=55)
+        if ch:
+            layers.append(ch)
+        layers.append({"type": "shape", "kind": "circle", "x": c + (0.3 if i % 2 else -0.3), "y": 0.58,
+                       "r": 0.28, "fill": "accent@0.35", "blur": 0.06})
+        layers.append(e.dev(i, c, 0.8, 0.82, (0, 0, 3 if i % 2 else -3), shadow="float", finish="graphite"))
+    return {"background": bgs, "layers": layers}
+
+
 DEFAULT_SIX = ["panoramic-flow", "floating-3d", "editorial", "typographic-hero", "feature-explosion", "cinematic"]
 
 
 def generate(spec, name, blocks=None):
     if name not in ENGINES:
         raise ValueError(f"unknown engine {name!r}; one of {', '.join(ENGINES)}")
-    return ENGINES[name]["fn"](E(spec, blocks))
+    e = E(spec, blocks)
+    return complete(e, ENGINES[name]["fn"](e))
+
+
+def complete(e: E, out):
+    """Place what the storyboard asks for that the engine left out: chips and a stat join the panel's caption
+    block (so they move with it and never collide with it), a footnote goes to the free edge of the panel."""
+    layers = out["layers"]
+    for i in range(1, e.N + 1):
+        p = e.sb[i - 1] if i - 1 < len(e.sb) else {}
+        pid = p.get("id")
+        texts = [L for L in layers if L.get("type") == "text" and L.get("panel") == i]
+        copies = {it.get("copy") for L in texts for it in L.get("items") or []}
+        main = next((L for L in texts if any(it.get("role") == "headline" for it in L.get("items") or [])), None)
+        if main and p.get("chips") and f"{pid}.chips" not in copies:
+            main["items"].append({"role": "chips", "copy": f"{pid}.chips"})
+            main.setdefault("chip_style", "solid")
+        if main and p.get("stat") and f"{pid}.stat" not in copies:
+            k = next(j for j, it in enumerate(main["items"]) if it.get("role") == "headline") + 1
+            main["items"][k:k] = [{"role": "stat", "copy": f"{pid}.stat", "color": main.get("accent", "accent")}] + (
+                [{"role": "label", "copy": f"{pid}.stat_label"}] if p.get("stat_label") else [])
+        if p.get("footnote") and f"{pid}.footnote" not in copies:
+            bottom = bool(main and main.get("anchor") == "bottom")
+            layers.append(e.footnote(i, color=(main or {}).get("color", "ink"), top=bottom))
+    return out

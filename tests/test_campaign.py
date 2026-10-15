@@ -651,3 +651,87 @@ def test_reference_names_the_types_check_and_fallback():
     doc = (SCRIPTS.parent / "references" / "creative-director.md").read_text()
     assert 'scope: "types"' in doc or "scope=types" in doc
     assert "review-page" in doc and "Design type" in doc
+
+
+# --- techniques: accent styles, chips, stats, footnotes, new engines ----------------------------------------
+
+def _techniques(tmp_path, panels=3, locales=("en-US",), engine="glass", **p3):
+    sb3 = {"chips": {"en-US": ["Offline", "Fast"], "he": ["אופליין", "מהיר"]}, "stat": "4/5",
+           "stat_label": "hikers plan faster", "evidence": "in-app survey n=1,200, Sept 2026",
+           "footnote": "*In-app survey of 1,200 hikers, Sept 2026."}
+    sb3.update(p3)
+    raw = S.load(make_campaign(tmp_path, panels=panels, locales=locales,
+                               extra={"campaign": {"engine": engine}}))
+    raw["storyboard"][panels - 1].update(sb3)
+    return raw
+
+
+def test_stat_needs_evidence_and_wants_a_footnote(tmp_path, rules):
+    sp = _techniques(tmp_path, evidence=None)
+    assert any("evidence" in m for lvl, _, m in errors(S.validate(sp, rules)))
+    sp = _techniques(tmp_path, footnote=None)
+    iss = S.validate(sp, rules)
+    assert errors(iss) == [] and any("footnote" in m for lvl, _, m in iss if lvl == "warn")
+
+
+def test_chips_are_checked_like_copy(tmp_path, rules):
+    assert errors(S.validate(_techniques(tmp_path), rules)) == []
+    sp = _techniques(tmp_path, chips=["#1 hiking app"], evidence=None, stat=None)
+    assert any("ranking" in m for _, _, m in errors(S.validate(sp, rules)))
+    sp = _techniques(tmp_path, chips="Offline, Fast")
+    assert any("chips must be a list" in m for _, _, m in errors(S.validate(sp, rules)))
+    sp = _techniques(tmp_path, locales=("en-US", "he"), chips=["Offline"])
+    assert any("one list for every language" in m for lvl, _, m in S.validate(sp, rules) if lvl == "warn")
+
+
+def test_unknown_accent_style_is_an_error(tmp_path, rules):
+    sp = _techniques(tmp_path)
+    sp["design"]["type"]["accent_style"] = "sparkle"
+    assert any("accent_style" in w for _, w, _ in errors(S.validate(sp, rules)))
+
+
+@pytest.mark.parametrize("name", sorted(engines.ENGINES))
+def test_every_engine_places_chips_stat_and_footnote(tmp_path, name):
+    sp = _techniques(tmp_path, panels=3, engine=name)
+    g = engines.generate(sp, name)
+    copies = [it.get("copy") for L in g["layers"] if L["type"] == "text" for it in L["items"]]
+    for field in ("chips", "stat", "stat_label", "footnote"):
+        assert copies.count(f"p3.{field}") == 1, (name, field)
+
+
+def test_footnote_moves_to_the_top_when_the_caption_is_at_the_bottom(tmp_path):
+    g = engines.generate(_techniques(tmp_path, engine="cinematic"), "cinematic")
+    fn = next(L for L in g["layers"] if L["type"] == "text" and L["items"][0].get("role") == "footnote")
+    assert fn["anchor"] == "top"
+
+
+@pytest.mark.parametrize("style", S.ACCENT_STYLES)
+def test_accent_styles_render(tmp_path, style):
+    sp = _techniques(tmp_path)
+    lay = {"background": [{"type": "solid", "color": "bg"}],
+           "layers": [{"type": "text", "panel": 1, "accent_style": style, "items": [{"role": "headline",
+                                                                                   "copy": "p1.headline"}]}]}
+    finfo, css, _ = fonts.resolve(sp["design"]["type"], {"latin"}, tmp_path, offline=True)
+    page = scene.build(sp, "en-US", "tiny", 240, 520, lay, finfo, css)[0]
+    assert f'class="acc acc-{style}"' in page and f".acc-{style}" in page
+
+
+def test_chips_and_footnote_html(tmp_path):
+    sp = _techniques(tmp_path)
+    g = engines.generate(sp, "glass")
+    finfo, css, _ = fonts.resolve(sp["design"]["type"], {"latin"}, tmp_path, offline=True)
+    page = scene.build(sp, "en-US", "tiny", 240, 520, g, finfo, css)[0]
+    assert '<span class="chip">Offline</span><span class="chip">Fast</span>' in page
+    assert "chips-glass" in page and "t-footnote" in page and "In-app survey" in page
+
+
+@chrome
+@pytest.mark.parametrize("name", ["big-type", "before-after", "glass", "sticker-pop"])
+def test_new_engines_render_clean(tmp_path, name):
+    sp = _techniques(tmp_path, engine=name, locales=("en-US", "he"))
+    p = tmp_path / "c.yaml"
+    p.write_text(S.dump(sp))
+    out = tmp_path / "out"
+    r = _run("render", p, "--engine", name, "--out", out, "--offline")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "0 error(s)" in r.stdout

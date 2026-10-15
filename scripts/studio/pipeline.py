@@ -64,8 +64,11 @@ def render_master(spec, layout, locale, slot, workdir: pathlib.Path, scale=1.0, 
     N = spec["campaign"]["panels"]
     MW = N * W
     workdir.mkdir(parents=True, exist_ok=True)
-    finfo, font_css, notes = fonts.resolve(spec["design"]["type"], locale_scripts(spec, locale),
-                                           pathlib.Path(spec["_base"]), offline)
+    type_cfg = spec["design"]["type"]
+    if "serif" in json.dumps(layout.get("layers") or []) or type_cfg.get("accent_style") == "serif":
+        type_cfg = {**type_cfg, "extra_faces": list(type_cfg.get("extra_faces") or []) + [scene.SERIF_ACCENT]}
+    finfo, font_css, notes = fonts.resolve(type_cfg, locale_scripts(spec, locale), pathlib.Path(spec["_base"]),
+                                           offline)
     mirror = mirror_for(spec, locale)
     page, meta = scene.build(spec, locale, sid, W, H, layout, finfo, font_css, mirror=mirror, measure=True)
     mp = workdir / "measure.html"

@@ -61,3 +61,8 @@ A refresh that finds nothing still logs `- No changes found`.
 - CHANGED: Status board "Before you submit" asks about the header asset; submit step asks the owner explicitly — live run
 - CHANGED: Campaign palette derived from the app's own hue with ≥7:1 ink contrast; cream only as fallback — live run
 - ADDED: campaign.py review-page as the fallback when the Claude Design canvas type isn't on the account — live run
+
+## 2026-10-15 (screenshot techniques from owner-supplied references)
+- ADDED (author edit, requested by the user): four engines — big-type (colour-block panels, oversized headline, a phone across the first seam), before-after (contrast story, then stat proof panels), glass (frosted light, chips, floating UI card, serif accent), sticker-pop (gradient-pill accent, tilted feature stickers) — owner-supplied store screenshot references, read for technique only
+- ADDED: accent styles pill, circle, underline, box, serif, gradient; storyboard chips (per locale), stat + stat_label + footnote, placed by every engine; image mask: blob — same references
+- ADDED: copy rules — a stat needs evidence and warns without a footnote; chips are claim-checked; a shared chip list across languages warns; laurels and badges stay refused without evidence — kit copy rules

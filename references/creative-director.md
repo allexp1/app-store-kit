@@ -55,7 +55,7 @@ campaign:                     # EXPORT
   mockup_only: false          # true only for concepts the owner asked for without real screens; never installs
 design:                       # TOKENS, propagate to every panel
   palette: {bg, bg2, ink, muted, accent, accent2, dark, light}   # #hex; refer to them by name, "accent@0.4" for alpha
-  type: {preset: friendly-consumer, accent_style: color|italic|marker, display: {family, weights}, files: [{family, src, weight}]}
+  type: {preset: friendly-consumer, accent_style: color|italic|marker|pill|circle|underline|box|serif|gradient, display: {family, weights}, files: [{family, src, weight}]}
   device: {model: iphone|ipad|screen, finish: titanium|graphite|silver|black|white|sand|navy|orange|sage|"#hex",
            shadow: soft|float|contact|long, glare: 0.08, focal: 2.6, light: 315}
   grain: 0.035
@@ -69,6 +69,10 @@ storyboard:                   # COPY, one per panel in store order
     kicker: {en-US: "Trail maps"}
     headline: {en-US: "Find the **trail** worth the climb", he: "..."}   # **word** = the accent
     sub: {en-US: "..."}
+    chips: {en-US: [Offline maps, Elevation], he: [...]}   # optional feature chips, 1–3 words each, one list per locale
+    stat: "4/5"               # optional stat callout (needs evidence:), with
+    stat_label: {en-US: "of hikers plan faster after a week"}
+    footnote: {en-US: "*In-app survey of 1,200 hikers, Sept 2026."}   # small print a stat or claim needs
     evidence: "..."           # required for any number, ranking, rating or award (see Copy)
 artwork:                      # ARTWORK with provenance (image layers, immersive backgrounds)
   dawn: {file: art/dawn.jpg, role: scene, source: "generated, tool X, prompt in art/dawn.txt", licence: "owner's"}
@@ -95,11 +99,11 @@ extra_layers: [...]           # added on top of an engine's layers without eject
 |---|---|
 | `device` | `screen`, `x`, `y`, `w`, `rotate`, `finish`, `model`, `shadow`, `glare`, `island`, `z` |
 | `card` | a real crop of a screen lifted out in 3D: `screen`, `crop: [x, y, w, h]` (fractions), `x`, `y`, `w`, `rotate`, `radius`, `shadow` |
-| `text` | `panel`, `x`, `y`, `w`, `align`, `anchor`, `color`, `accent`, `shadow`, `items: [{role: kicker\|headline\|sub, copy: <id>.<field>, size, color, opacity}]` |
+| `text` | `panel`, `x`, `y`, `w`, `align`, `anchor`, `color`, `accent`, `accent_style`, `shadow`, `chip_style: glass\|solid\|outline\|sticker`, `chip_fill`, `items: [{role: kicker\|headline\|sub\|chips\|stat\|label\|footnote, copy: <id>.<field>, size, color, opacity}]` |
 | `display` | giant decorative text (`text`, `x`, `y`, `size`, `outline`, `opacity`, `tracking`): never the only place a claim is made |
 | `shape` | `kind: blob\|wave\|ring\|circle\|path\|rect\|dots\|arc`, `fill`, `stroke`, `blur`, `opacity` and kind-specific keys |
 | `glow` | soft light: `x`, `y`, `r`, `color`, `opacity`, `blend` |
-| `image` | `art` (from `artwork:`), `x`, `y`, `w`, `h`, `fit`, `blend` |
+| `image` | `art` (from `artwork:`), `x`, `y`, `w`, `h`, `fit`, `blend`, `mask: blob` (an organic rounded crop) |
 | `icon` | the app icon (`app.icon`): `x`, `y`, `w` |
 
 Backgrounds: `solid`, `linear` (`angle`, `stops`), `radial`, `conic`, `panel` (a colour for one panel: the dark
@@ -121,6 +125,22 @@ spread), `image` (`art`).
 | `device-cluster` | overlapping groups of phones at different depths |
 | `immersive` | a full-bleed scene (`artwork` with `role: scene`) behind the phones; a procedural scene if none |
 | `illustrated` | flat shapes and blobs in the palette, playful type |
+| `big-type` | saturated colour-block panels, the first headline fills its panel, one phone straddles the first seam |
+| `before-after` | a dim "before" panel meets a bright "after" across one phone; later panels pair a small phone with a sourced stat |
+| `glass` | pale gradient light, glass chips under the headline, a real UI card floating off the phone, one word in italic serif |
+| `sticker-pop` | sky gradient, the key word in a gradient pill, feature chips stuck on as tilted stickers above a big phone |
+
+Every engine also places what the storyboard asks for: `chips` and a `stat` join the panel's caption block (so they
+never collide with it), and a `footnote` goes to the free edge of the panel on a quiet backing that stays readable
+over a phone. `before-after` reads best when panel 1's copy is the "before" (`sub` as short lines) and panel 2's
+the "after"; `concepts --engines big-type,before-after,glass,sticker-pop,...` shows them beside the defaults.
+
+### Accent styles
+
+`**word**` in a headline marks the accent; `design.type.accent_style` (or `accent_style` on one text layer) sets how
+it looks: `color`, `italic`, `marker` (highlighter), `pill` (the word on a gradient pill), `circle` (a hand-drawn
+ring), `underline` (a curved swash), `box` (a selection box with handles), `serif` (the word in Instrument Serif
+italic, loaded only when used), `gradient` (accent to accent2 text fill). One accent per headline reads best.
 
 The six defaults for `concepts` are the first six. Adding an engine: write a function in
 `scripts/studio/engines.py` decorated with `@engine(name, label=, pattern=, type_preset=, mood=)` that returns
@@ -149,6 +169,11 @@ a matching fallback face when the preset lacks the script.
 - **No invented claims.** Rankings, user counts, ratings, stars, awards and percentages are errors without
   `evidence:` (where the number comes from). Superlatives ("best") warn: fine as everyday language, not as a claim.
 - Store-forbidden (errors even with evidence): Apple recognitions, URLs, prices and discounts, ©, other platforms.
+- A `stat` is an error without `evidence:` and warns without a `footnote:` saying what it measures. Chips are checked
+  like any copy, and one chip list shared by several languages warns (give one list per locale).
+- Laurels, "Featured by Apple", "As seen in" press logos and award badges are what store sets imitate most and what
+  this kit refuses to invent: Apple recognitions are never allowed, and third-party logos and awards need the
+  owner's evidence and rights.
 - `[PLACEHOLDER]` copy blocks a render. Quote copy that starts with `[` (YAML reads it as a list).
 - Translations are written per language, not word for word; a locale falling back to another language warns.
 - A translated headline over untranslated UI warns: capture localized screens (`{locale}` in the path) when they exist.

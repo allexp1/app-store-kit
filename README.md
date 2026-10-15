@@ -44,6 +44,9 @@ How it works (`scripts/campaign.py`, details in `references/creative-director.md
 6. **Export.** `render --install KIT` puts the panels where the rest of the kit uploads them (after your yes).
    `campaign.py canvas` also makes an editable Claude Design canvas.
 
+Fourteen composition engines (among them big type, before/after, glass and sticker pop), accent words in a pill,
+ring, swash, selection box or serif italic, feature chips, and stat callouts that refuse to render without a source.
+
 Replace screenshots: overwrite the files under `screens:` and render again; layout and copy stay. Add a composition
 engine: one decorated function in `scripts/studio/engines.py`. A full example from a made-up hiking app ("Ridgeline",
 synthetic screens) is in `examples/sample-campaign/`; its rendered contact sheet and en/he/ru sets are in

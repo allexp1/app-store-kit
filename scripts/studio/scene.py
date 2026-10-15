@@ -23,7 +23,7 @@ import re
 from PIL import Image
 
 from . import devices, fonts
-from .spec import HEX, screen_path, text_for
+from .spec import ACCENT_STYLES, HEX, screen_path, text_for  # noqa: F401  (ACCENT_STYLES re-exported)
 
 ROLE_DEFAULTS = {
     # size (u), max lines, font, leading, tracking (em)
@@ -32,7 +32,13 @@ ROLE_DEFAULTS = {
     "sub": {"size": 0.043, "max_lines": 3, "font": "text", "leading": 1.28, "tracking": -0.005},
     "label": {"size": 0.032, "max_lines": 2, "font": "text", "leading": 1.25, "tracking": 0.0},
     "big": {"size": 0.2, "max_lines": 2, "font": "display"},
+    "stat": {"size": 0.17, "max_lines": 1, "font": "display", "leading": 1.0, "tracking": -0.03},
+    "footnote": {"size": 0.026, "max_lines": 4, "font": "text", "leading": 1.3, "tracking": 0.0},
+    "chips": {"size": 0.034, "max_lines": 2, "font": "text", "leading": 2.1, "tracking": 0.0, "weight": 600},
 }
+CHIP_STYLES = ("glass", "solid", "outline", "sticker")
+SERIF_ACCENT = "Instrument Serif"   # the face the `serif` accent style swaps to (loaded when that style is used)
+BLOB_RADIUS = "58% 42% 55% 45% / 46% 56% 44% 54%"   # image `mask: blob`: an organic rounded shape
 MIN_HEADLINE_U = 0.06   # below this a headline stops reading in a store thumbnail
 
 
@@ -263,6 +269,21 @@ def _shape(ctx, S, key, defs):
     raise ValueError(f"shape kind {k!r}")
 
 
+def _on(ctx, tok):
+    """ink or light, whichever reads better on this colour token (for text inside a pill or chip)."""
+    c = ctx.col(str(tok).split("@")[0])
+    if not HEX.match(c):
+        return ctx.col("light")
+    ink, light = ctx.col("ink"), ctx.col("light")
+    lc = luminance(c)
+    cr = lambda a: (max(luminance(a), lc) + 0.05) / (min(luminance(a), lc) + 0.05)  # noqa: E731
+    return ink if cr(ink) >= cr(light) else light
+
+
+def _chips(items):
+    return "".join(f'<span class="chip">{html.escape(str(x))}</span>' for x in items if str(x).strip())
+
+
 def _richtext(text, accent_style):
     """**word** marks the accent; newlines are kept as line breaks."""
     out = []
@@ -307,6 +328,10 @@ def _text_block(ctx, L, idx, finfo, fit):
             ref = it.get("copy") or ""
             pid, _, field = ref.partition(".")
             t, _ = text_for(sb.get(pid, {}).get(field or role), loc, prim)
+        chips = None
+        if isinstance(t, list):
+            chips = [str(x) for x in t if str(x).strip()]
+            t = " · ".join(chips)
         if not t:
             continue
         scripts = fonts.scripts_in(t, loc)
@@ -325,12 +350,25 @@ def _text_block(ctx, L, idx, finfo, fit):
                  + (f"transform:skewX({skew}deg);" if skew else "")
                  + (f"text-shadow:{it.get('shadow') or L.get('shadow')};" if (it.get('shadow') or L.get('shadow')) else "")
                  + (f"opacity:{it['opacity']};" if "opacity" in it else ""))
-        acc_col = ctx.col(it.get("accent", L.get("accent", "accent")))
-        rows.append(f'<div class="t t-{role}" data-tid="{tid}" data-fit="1" data-size="{fs:.2f}" '
+        acc_tok = it.get("accent", L.get("accent", "accent"))
+        acc_col = ctx.col(acc_tok)
+        acc_style = it.get("accent_style", L.get("accent_style", finfo["accent_style"]))
+        chip_tok = it.get("chip_fill", L.get("chip_fill", acc_tok))
+        style += (f"--acc2:{ctx.col(it.get('accent2', L.get('accent2', 'accent2')))};--on-acc:{_on(ctx, acc_tok)};"
+                  f"--chip:{ctx.col(chip_tok)};--on-chip:{_on(ctx, chip_tok)};")
+        if role == "footnote":
+            # small print over a phone or a busy scene: give it its own quiet backing so it stays readable
+            base = ctx.col(str(it.get("color", L.get("color", "ink"))).split("@")[0])
+            back = "dark@0.72" if HEX.match(base) and luminance(base) > 0.4 else "light@0.82"
+            style += (f"background:{ctx.col(back)};padding:.45em .75em;border-radius:.7em;"
+                      f"align-self:flex-start;")
+        body = _chips(chips) if chips is not None else _richtext(t, acc_style)
+        extra = f" chips-{L.get('chip_style', 'glass')}" if chips is not None else ""
+        rows.append(f'<div class="t t-{role}{extra}" data-tid="{tid}" data-fit="1" data-size="{fs:.2f}" '
                     f'data-min="{ctx.U(rd.get("min", MIN_HEADLINE_U if role == "headline" else 0.026)):.2f}" '
                     f'data-max-lines="{rd["max_lines"]}" data-lh="{lead}" data-role="{role}" '
                     f'data-family="{html.escape(f["family"], quote=True)}" data-weight="{weight}" '
-                    f'style="{style}--acc:{acc_col}">{_richtext(t, finfo["accent_style"])}</div>')
+                    f'style="{style}--acc:{acc_col}">{body}</div>')
         meta.append({"tid": tid, "role": role, "text": t, "panel": p, "family": f["family"], "scripts": sorted(scripts)})
     if not rows:
         return "", []
@@ -403,7 +441,7 @@ def build(spec, locale, slot_id, W, H, layout, finfo, font_css, fit=None, mirror
             parts.append(f'<img class="art" data-id="img{i}" data-kind="image" src="{p.as_uri()}" alt="" '
                          f'style="left:{ctx.X(L["x"]) - w / 2:.1f}px;top:{ctx.Y(L["y"]) - h / 2:.1f}px;width:{w:.1f}px;'
                          f'height:{h:.1f}px;object-fit:{L.get("fit", "cover")};opacity:{L.get("opacity", 1)};'
-                         f'transform:rotate({rot}deg) {flip};border-radius:{ctx.U(L.get("radius", 0)):.1f}px;'
+                         f'transform:rotate({rot}deg) {flip};border-radius:{BLOB_RADIUS if L.get("mask") == "blob" else "%.1fpx" % ctx.U(L.get("radius", 0))};'
                          f'{"z-index:%s;" % z if z is not None else ""}'
                          f'{"mix-blend-mode:%s;" % L["blend"] if L.get("blend") else ""}'
                          f'{"filter:drop-shadow(0 %.0fpx %.0fpx rgba(0,0,0,.3));" % (h * .03, h * .05) if L.get("shadow") else ""}">')
@@ -478,6 +516,33 @@ html,body{{margin:0;padding:0;background:{ctx.col('bg')}}}
 .acc-marker{{--mk:color-mix(in srgb,var(--acc) 55%,transparent);
   background:linear-gradient(transparent 58%,var(--mk) 58%,var(--mk) 92%,transparent 92%);
   padding:0 .06em;-webkit-box-decoration-break:clone;box-decoration-break:clone}}
+.acc-pill{{background:linear-gradient(100deg,var(--acc),color-mix(in srgb,var(--acc) 62%,var(--acc2)));
+  color:var(--on-acc);padding:.02em .3em .08em;border-radius:.42em;
+  -webkit-box-decoration-break:clone;box-decoration-break:clone}}
+.acc-circle,.acc-underline,.acc-box{{position:relative;display:inline-block}}
+.acc-circle::after{{content:"";position:absolute;inset:-.1em -.22em -.06em -.2em;border:.055em solid var(--acc);
+  border-radius:50%;transform:rotate(-4deg);pointer-events:none}}
+.acc-underline::after{{content:"";position:absolute;left:-.04em;right:-.04em;bottom:-.1em;height:.22em;
+  border-bottom:.06em solid var(--acc);border-radius:0 0 50% 50% / 0 0 100% 100%;pointer-events:none}}
+.acc-box{{outline:.035em solid var(--acc);outline-offset:.04em}}
+.acc-box::before,.acc-box::after{{content:"";position:absolute;width:.13em;height:.13em;background:var(--acc)}}
+.acc-box::before{{left:-.105em;top:-.105em}}
+.acc-box::after{{right:-.105em;bottom:-.105em}}
+.acc-serif{{font-family:'{SERIF_ACCENT}',serif;font-style:italic;font-weight:400;letter-spacing:-.01em}}
+.acc-gradient{{background:linear-gradient(100deg,var(--acc),var(--acc2));-webkit-background-clip:text;
+  background-clip:text;color:transparent;-webkit-box-decoration-break:clone;box-decoration-break:clone}}
+.t-chips{{display:flex;flex-wrap:wrap;gap:.45em .4em;line-height:1.2}}
+.tx[style*="text-align:center"] .t-chips{{justify-content:center}}
+.tx[style*="text-align:end"] .t-chips{{justify-content:flex-end}}
+.chip{{display:inline-block;padding:.42em .95em;border-radius:999px;white-space:nowrap}}
+.chips-glass .chip{{background:rgba(255,255,255,.62);border:.06em solid rgba(255,255,255,.85);
+  box-shadow:0 .25em .9em rgba(20,20,40,.10)}}
+.chips-solid .chip{{background:var(--chip);color:var(--on-chip)}}
+.chips-outline .chip{{border:.08em solid var(--chip)}}
+.chips-sticker .chip{{background:var(--chip);color:var(--on-chip);box-shadow:0 .2em .6em rgba(0,0,0,.18);
+  border:.12em solid #fff}}
+.chips-sticker .chip:nth-child(odd){{transform:rotate(-5deg)}}
+.chips-sticker .chip:nth-child(even){{transform:rotate(4deg)}}
 {'.tx{visibility:hidden}' if hide_text else ''}
 """)
     script = MEASURE_JS if measure else ""

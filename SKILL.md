@@ -204,7 +204,11 @@ kit/release-history.yaml       version, build, date and commit of each release (
   app mid-gesture (tilt, stamp, colour wash, next item underneath), not at rest, and make the swipe the app preview,
   which plays first. A resting screen with buttons doesn't say "swipe".
 - Show visual directions side by side and let the human pick one before producing every size: `campaign.py concepts`
-  renders six as a contact sheet from the real screens (`references/creative-director.md`).
+  renders six as a contact sheet from the real screens (`references/creative-director.md`). When the owner shares
+  reference sets, name the technique in each (big type, before/after, glass, stickers, an accent word in a pill,
+  ring or serif, feature chips, a sourced stat with its footnote) and map it to an engine, `accent_style` or
+  storyboard field; read references for technique only, never copy them, and never add laurels or badges without
+  evidence.
 
 **5. Capture.** Use `scripts/capture.sh` per screen, device, locale and appearance:
 - boots the simulator and sets the status bar override (9:41, full battery, Wi-Fi);

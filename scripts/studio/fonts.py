@@ -219,6 +219,7 @@ def resolve(type_cfg: dict, scripts: set[str], base: pathlib.Path, offline=False
     wanted = [(disp["family"], disp.get("weights", [disp.get("weight", 400)]), disp.get("italic", False)),
               (text["family"], text.get("weights", [text.get("weight", 400)]), False),
               (mono["family"], mono.get("weights", [500]), False)]
+    wanted += [(fam, [400], True) for fam in type_cfg.get("extra_faces") or []]
     for s in sorted(scripts):
         for kind in ("serif", "sans"):
             fb = SCRIPT_FALLBACK.get(s, {}).get(kind)

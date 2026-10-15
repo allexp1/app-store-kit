@@ -31,6 +31,8 @@ DEFAULT_DESIGN = {
 }
 LAYER_TYPES = {"device", "card", "text", "display", "shape", "image", "glow", "icon"}
 BG_TYPES = {"solid", "linear", "radial", "conic", "image", "panel"}
+TEXT_FIELDS = ("headline", "sub", "kicker", "stat", "stat_label", "footnote")   # chips: a list, checked apart
+ACCENT_STYLES = ("color", "italic", "marker", "pill", "circle", "underline", "box", "serif", "gradient")
 ROLES = ["hero", "value", "differentiator", "experience", "secondary", "closing", "feature", "proof"]
 
 # Words that make a claim Apple or a reader would ask evidence for. A storyboard entry may carry
@@ -103,10 +105,11 @@ def normalize(raw: dict) -> dict:
 
 
 def text_for(value, locale: str, primary: str):
-    """A copy value: a string (all locales) or {locale: text, '*': text}. Returns (text, from_locale)."""
+    """A copy value: a string (all locales) or {locale: text, '*': text}. Returns (text, from_locale).
+    A list (feature chips) works the same way: one list for all locales, or one per locale."""
     if value is None:
         return None, None
-    if isinstance(value, str):
+    if isinstance(value, (str, list)):
         return value, "*"
     for k in (locale, fonts.lang(locale), "*"):
         if k in value:
@@ -190,6 +193,8 @@ def validate(spec: dict, rules: dict) -> list:
             issues.append(("error", f"design.palette.{k}", f"not a #hex colour: {v!r}"))
     if spec["design"]["type"].get("preset", "modern-tech") not in fonts.PRESETS:
         issues.append(("error", "design.type.preset", f"unknown preset {spec['design']['type']['preset']!r}; one of {', '.join(fonts.PRESETS)}"))
+    if spec["design"]["type"].get("accent_style", "color") not in ACCENT_STYLES:
+        issues.append(("error", "design.type.accent_style", f"one of {', '.join(ACCENT_STYLES)}"))
     if c["rtl_flow"] not in ("mirror", "keep"):
         issues.append(("error", "campaign.rtl_flow", "mirror or keep"))
     used = set()
@@ -205,17 +210,38 @@ def validate(spec: dict, rules: dict) -> list:
             issues.append(("warn", where, "no screen: every panel should show real UI (set no_screen: true "
                                           "for a deliberate type-only panel)"))
         bad = False
-        for field in ("headline", "sub", "kicker"):
+        for field in TEXT_FIELDS:
             v = p.get(field)
             vals = [v] if not isinstance(v, dict) else list(v.values())
             if any(x is not None and not isinstance(x, str) for x in vals):
                 issues.append(("error", where, f"{field} is not text: {v!r}. YAML reads an unquoted [..] as a "
                                                "list; put the copy in quotes"))
                 bad = True
+        ch = p.get("chips")
+        if ch is not None:
+            vals = [ch] if not isinstance(ch, dict) else list(ch.values())
+            if not all(isinstance(x, list) and all(isinstance(y, str) for y in x) for x in vals):
+                issues.append(("error", where, f"chips must be a list of short labels (or one list per locale): "
+                                               f"{ch!r}"))
+                bad = True
+            elif isinstance(ch, list) and len(c["locales"]) > 1:
+                issues.append(("warn", where, "chips is one list for every language; give one list per locale "
+                                              "({en-US: [...], he: [...]}) so they are translated"))
         if bad:
             continue
+        if p.get("stat") and not p.get("evidence"):
+            issues.append(("error", where, "a stat needs `evidence:` (where the number comes from). Never invent "
+                                           "numbers; drop the stat if there is no source"))
+        elif p.get("stat") and not p.get("footnote"):
+            issues.append(("warn", where, "a stat without a `footnote:` saying what it measures (sample, date); "
+                                          "readers and App Review trust a stated source"))
         for loc in c["locales"]:
-            for field in ("headline", "sub", "kicker"):
+            chips, _ = text_for(ch, loc, c["primary_locale"])
+            for k, label in enumerate(chips or []):
+                check_copy(label, f"{where} chips[{k}] [{loc}]", p.get("evidence"), issues)
+                if len(label) > 22:
+                    issues.append(("warn", where, f"chip [{loc}] {label!r} is long; 1–3 words read as a chip"))
+            for field in TEXT_FIELDS:
                 t, src = text_for(p.get(field), loc, c["primary_locale"])
                 if field == "headline" and t is None:
                     issues.append(("error", where, f"no headline for {loc}"))
@@ -252,6 +278,8 @@ def validate(spec: dict, rules: dict) -> list:
         t = L.get("type")
         if t not in LAYER_TYPES:
             issues.append(("error", f"layers[{j}]", f"type {t!r} is not one of {', '.join(sorted(LAYER_TYPES))}"))
+        if t == "text" and L.get("accent_style", "color") not in ACCENT_STYLES:
+            issues.append(("error", f"layers[{j}]", f"accent_style one of {', '.join(ACCENT_STYLES)}"))
         if t == "text" and not 1 <= int(L.get("panel", 0)) <= n:
             issues.append(("error", f"layers[{j}]", f"text panel {L.get('panel')!r} is outside 1–{n}"))
         if t in ("device", "card") and L.get("screen") not in spec["screens"]:
