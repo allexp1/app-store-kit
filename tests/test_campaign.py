@@ -5,6 +5,7 @@ skipped when none is found ($CHROME or the Playwright cache). Rendering runs --o
 """
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -394,6 +395,67 @@ def test_canvas_board_shape():
     b = canvas.board("Main", "T", "<div>x</div>", ".a{}", "<link>", 300, 650)
     assert '<script src="./support.js"></script>' in b
     assert "class Component extends DCLogic" in b and '"$preview":{"width":300,"height":650}' in b
+
+
+def test_canvas_flatten_strips_layered_effects():
+    s = ('a{transform-style:preserve-3d;perspective-origin:50% 50%}'
+         '<i style="perspective:900px;filter:brightness(0.8) drop-shadow(0 2px 9px rgba(0,0,0,.2));'
+         'mix-blend-mode:screen;opacity:1;transform:rotateY(8deg)">')
+    out = canvas._flatten(s)
+    for gone in ("filter", "drop-shadow", "mix-blend", "preserve-3d", "perspective"):
+        assert gone not in out
+    assert "opacity:1;" in out and "transform:rotateY(8deg)" in out and out.startswith("a{}")
+
+
+def test_canvas_drop_removes_whole_subtrees():
+    h = ('<div data-id="a"><div><b>x</b></div></div><img data-id="b" src="s.png">'
+         '<div data-id="c">keep</div><span data-id="d">y</span>')
+    out = canvas._drop(h, ["a", "b", "d", "missing"])
+    assert out == '<div data-id="c">keep</div>'
+
+
+def test_canvas_off_panel_by_rect_and_text_panel():
+    measure = {"els": [{"id": "dev1", "rect": [10, 0, 80, 100]},
+                       {"id": "dev2", "rect": [110, 0, 80, 100], "outer": [150, 0, 80, 100]},
+                       {"id": "bg", "rect": [0, 0, 300, 100]}]}
+    html = ('<div data-id="text1" data-kind="text" data-panel="1"></div>'
+            '<div data-id="text2" data-kind="text" data-panel="2"></div>')
+    assert sorted(canvas._off_panel(measure, html, 0, 100, 3, False)) == ["dev2", "text2"]
+    assert sorted(canvas._off_panel(measure, html, 1, 100, 3, False)) == ["dev1", "text1"]
+    # RTL: panel 1 sits in the rightmost column; dev2's outer rect (shadow, tilt) reaches into it
+    assert sorted(canvas._off_panel(measure, html, 2, 100, 3, True)) == ["dev1", "text2"]
+
+
+def test_canvas_small_copies(tmp_path):
+    big, small = tmp_path / "big.png", tmp_path / "small.png"
+    Image.new("RGB", (400, 800), (200, 10, 10)).save(big)
+    Image.new("RGB", (100, 200), (10, 200, 10)).save(small)
+    files = canvas._small_copies({str(big): "__ASSET_001__", str(small): "__ASSET_002__"}, tmp_path / "o", 200)
+    with Image.open(files["__ASSET_001__"]) as a, Image.open(files["__ASSET_002__"]) as b:
+        assert a.size == (200, 400) and b.size == (100, 200)
+    with Image.open(big) as src:
+        assert src.size == (400, 800)                                       # the source is never touched
+
+
+@chrome
+def test_canvas_export_per_panel_boards(tmp_path):
+    p = make_campaign(tmp_path, panels=3)
+    out = tmp_path / "cv"
+    r = subprocess.run([sys.executable, str(SCRIPTS / "campaign.py"), "canvas", str(p), "--out", str(out),
+                        "--offline"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout + r.stderr
+    proj = out / "project"
+    cv = json.loads((proj / "canvas.json").read_text())
+    assert cv["order"][0] == "Main.dc.html" and len(cv["order"]) == 4
+    for k, name in enumerate(cv["order"][1:], start=1):
+        t = (proj / name).read_text()
+        panels = re.findall(r'data-kind="text" data-panel="(\d+)"', t)
+        assert panels and set(panels) == {str(k)}
+        assert not re.search(r"filter:|mix-blend-mode|preserve-3d|perspective", t)
+    main = (proj / "Main.dc.html").read_text()
+    assert set(re.findall(r'data-kind="text" data-panel="(\d+)"', main)) == {"1", "2", "3"}
+    up = json.loads((out / "assets.json").read_text())
+    assert len(up) == 3 and all(pathlib.Path(u["file"]).exists() and u["file"] != u["source"] for u in up)
 
 
 # --- rendering through headless Chromium ---------------------------------------------------------------------

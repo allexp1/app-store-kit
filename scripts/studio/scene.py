@@ -346,7 +346,7 @@ def _text_block(ctx, L, idx, finfo, fit):
 
 
 def build(spec, locale, slot_id, W, H, layout, finfo, font_css, fit=None, mirror=False, hide_text=False,
-          measure=True):
+          measure=True, slices=None):
     """layout = {'background': [...], 'layers': [...]} with every value already resolved."""
     fit = fit or {}
     ctx = Ctx(spec, locale, slot_id, W, H, mirror)
@@ -377,7 +377,7 @@ def build(spec, locale, slot_id, W, H, layout, finfo, font_css, fit=None, mirror
                 rotate=ctx.rot(L.get("rotate")), focal=L.get("focal", dev["focal"]),
                 shadow=L.get("shadow", dev["shadow"]), glare=L.get("glare", dev["glare"]),
                 island=L.get("island"), light=(360 - dev["light"]) % 360 if mirror else dev["light"],
-                z=z, opacity=L.get("opacity", 1)))
+                z=z, opacity=L.get("opacity", 1), slices=slices))
             elements.append({"id": f"dev{i}", "kind": "device", "screen": L["screen"]})
         elif t == "card":
             uri, sw, sh = ctx.shot(L["screen"])

@@ -60,6 +60,68 @@ def _tokenize(html_text, assets):
     return re.sub(r"file://[^\"')\s]+", rep, html_text)
 
 
+FLAT = re.compile(r"(?:-webkit-)?(?:backdrop-)?filter:\s*(?:[^;\"'}()]|\((?:[^()]|\([^()]*\))*\))*;?"
+                  r"|mix-blend-mode:[^;\"'}]*;?|transform-style:[^;\"'}]*;?|perspective(?:-origin)?:[^;\"'}]*;?")
+
+
+def _flatten(text):
+    """Strip filters, blend modes and 3D context. Each of them gives an element its own compositing layer,
+    and a few boards of layered 3D phones make the canvas editor's frame go blank ~20 s after load."""
+    return FLAT.sub("", text)
+
+
+def _drop(html_text, ids):
+    """Remove the elements carrying data-id in `ids` (a whole <div>…</div> subtree, or a void <img>)."""
+    for did in ids:
+        m = re.search(r'<(\w+)[^>]*\bdata-id="%s"' % re.escape(did), html_text)
+        if not m:
+            continue
+        start, tag = m.start(), m.group(1)
+        if tag == "img":
+            end = html_text.index(">", m.end()) + 1
+        else:
+            depth, pos = 0, start
+            for t in re.finditer(r"<(/?)%s\b[^>]*>" % tag, html_text[start:]):
+                depth += -1 if t.group(1) else 1
+                if depth == 0:
+                    pos = start + t.end()
+                    break
+            end = pos
+        html_text = html_text[:start] + html_text[end:]
+    return html_text
+
+
+def _off_panel(measure, html_text, col, W, N, mirror):
+    """data-ids that do not touch panel column `col`: measured elements outside it, text blocks of other panels."""
+    lo, hi = col * W, (col + 1) * W
+    out = []
+    for e in measure.get("els", []):
+        x, _, w, _ = e.get("outer") or e["rect"]
+        if x + w <= lo or x >= hi:
+            out.append(e["id"])
+    for did, p in re.findall(r'data-id="(text\d+)" data-kind="text" data-panel="(\d+)"', html_text):
+        if ((N - int(p)) if mirror else (int(p) - 1)) != col:
+            out.append(did)
+    return out
+
+
+def _small_copies(assets, out, width):
+    """The canvas shows boards scaled down: upload half-size screenshots instead of the full captures."""
+    from PIL import Image
+    d = out / "assets"
+    d.mkdir(parents=True, exist_ok=True)
+    files = {}
+    for src, tok in assets.items():
+        dst = d / f"{tok.strip('_').lower()}{pathlib.Path(src).suffix.lower() or '.png'}"
+        with Image.open(src) as im:
+            im.load()
+            if im.width > width:
+                im = im.resize((width, round(im.height * width / im.width)), Image.LANCZOS)
+            im.save(dst)
+        files[tok] = str(dst)
+    return files
+
+
 def board(name, title, inner, css, link, w, h, offset_x=0):
     return f"""<!doctype html>
 <html lang="en">
@@ -103,10 +165,13 @@ def export(spec, rules, out: pathlib.Path, locale=None, slot=None, offline=False
     lay = pipeline.layout_for(spec, None, blocks)
     work = out / ".work"
     r = pipeline.render_master(spec, lay, locale, (sid, W, H), work, scale=0.2, offline=offline)
-    page = pathlib.Path(r["html"]).read_text()
+    # rebuild with thin phones (4 slices, not 22): seven boards of full 3D stacks stall the canvas editor
+    page, _ = scene.build(spec, locale, sid, W, H, lay, r["fonts"], r["font_css"], fit=r["fit"],
+                          mirror=r["mirror"], measure=False, slices=4)
     inner = _body_of(page)
     inner = re.sub(r'<div class="grain"[^>]*></div>', "", inner)   # data: URIs are not allowed on a canvas
-    css = _style_of(page).replace("html,body", "body")
+    inner = _flatten(inner)          # flat phones: the canvas is for editing copy and layout, PNGs come from render
+    css = _flatten(_style_of(page).replace("html,body", "body"))
     assets = {}
     inner = _tokenize(inner, assets)
     link = _gfonts_link(r["fonts"])
@@ -125,7 +190,8 @@ def export(spec, rules, out: pathlib.Path, locale=None, slot=None, offline=False
     for k in range(N):
         col = (N - 1 - k) if r["mirror"] else k
         name = "Main.dc.html" if (k == 0 and not order) else f"Panel-{k + 1:02d}-{re.sub(r'[^A-Za-z0-9-]', '-', ids[k])}.dc.html"
-        (proj / name).write_text(board(name, f"Panel {k + 1}", inner, css, link, W, H, offset_x=col * W))
+        mine = _drop(inner, _off_panel(r["measure"], inner, col, W, N, r["mirror"]))
+        (proj / name).write_text(board(name, f"Panel {k + 1}", mine, css, link, W, H, offset_x=col * W))
         boards[name] = {"x": k * (W + 80), "y": y0, "w": W, "h": H, "title": f"{k + 1:02d} · {ids[k]}"}
         order.append(name)
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -137,7 +203,8 @@ def export(spec, rules, out: pathlib.Path, locale=None, slot=None, offline=False
     if not order[0] == "Main.dc.html":
         raise RuntimeError("internal: the first artboard must be Main.dc.html")
     (proj / "canvas.json").write_text(json.dumps(canvas, indent=1))
-    up = [{"token": t, "file": p} for p, t in assets.items()]
+    small = _small_copies(assets, out, max(1, W // 2))
+    up = [{"token": tok, "file": small[tok], "source": src} for src, tok in assets.items()]
     (out / "assets.json").write_text(json.dumps(up, indent=2))
     print(f"wrote {proj} ({len(order)} artboards) and {out / 'assets.json'} ({len(up)} images to upload)")
     print("next: upload each asset to the canvas (asset: true), write asset-urls.json {token: url}, "

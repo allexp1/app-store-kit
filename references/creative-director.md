@@ -202,7 +202,11 @@ left-to-right layout and only right-aligns the text.
 
 - **Claude Design canvas** (claude.ai): `campaign.py canvas campaign.yaml --out DIR` writes `DIR/project/canvas.json`,
   `Main.dc.html` (the whole panorama, when it is at most 8000 px wide) and one artboard per panel, with live text and
-  inline styles the canvas edits, and `DIR/assets.json` (the screenshots to upload). Then, from the session:
+  inline styles the canvas edits, and `DIR/assets.json` (half-size copies of the screenshots to upload). Each panel
+  artboard holds only the elements that touch its column. The export is deliberately lighter than the render:
+  thin phones (4 slices, not 22), and no filters, blend modes or 3D context (`perspective`, `preserve-3d`). Each of
+  those gets its own compositing layer, and a canvas of several 3D-phone boards loads, then goes blank about 20 s
+  later. If a canvas goes blank after loading, look for these first. Then, from the session:
   1. create the canvas: Artifact publish with the Design type's `type_url`, a `title`, `auto_open: "after_first_write"`;
   2. upload every file in `assets.json` to it (`asset: true`, `file_paths`) and write `DIR/asset-urls.json` as
      `{"__ASSET_001__": "/_blob/<id>", ...}` (token order = `assets.json` order);
@@ -219,3 +223,4 @@ left-to-right layout and only right-aligns the text.
 - Fonts download once from Google Fonts; offline without a cache, a system face is used and QA warns.
 - Concepts render at 30% scale; the final QA runs only on the full render.
 - The canvas export is a snapshot of one locale and slot; edits there do not flow back into `campaign.yaml`.
+  Its phones are flat (no shading, shadows or perspective), so judge depth and lighting on the rendered PNGs.
