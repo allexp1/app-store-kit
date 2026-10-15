@@ -296,3 +296,62 @@ def test_precheck_duo_matches_frozen_rules_and_sdk(tmp_path):
         assert {f['severity'] for f in result.findings} == ({expected} if expected else set())
         if sdk is None:
             assert all('SDK is unknown' in f['message'] for f in result.findings)
+
+
+GENERATED_PLIST = pathlib.Path(__file__).resolve().parent / "fixtures" / "precheck-generated-plist"
+
+
+def copy_generated_plist_project(tmp_path):
+    """The Xcode-template layout: GENERATE_INFOPLIST_FILE = YES, MARKETING_VERSION = 1.0, no version in Info.plist."""
+    import shutil
+    root = tmp_path / "proj"
+    shutil.copytree(GENERATED_PLIST, root)
+    return root
+
+
+def version_findings(data):
+    return [f for f in data["findings"] if f["id"] == "UP-18" and "CFBundleShortVersionString" in f["message"]]
+
+
+def test_generated_plist_version_comes_from_marketing_version(tmp_path, capsys):
+    root = copy_generated_plist_project(tmp_path)
+    assert "CFBundleShortVersionString" not in plistlib.loads((root / "Demo/Info.plist").read_bytes())
+    _, data = run_json(root, capsys)
+    assert version_findings(data) == []
+    assert pc.Project(root).info_value("CFBundleShortVersionString", "MARKETING_VERSION") == \
+        ("1.0", "build setting MARKETING_VERSION")
+    assert pc.Project(root).info_value("CFBundleVersion", "CURRENT_PROJECT_VERSION")[0] == "7"
+
+
+def test_generated_plist_with_empty_marketing_version_still_blocks(tmp_path, capsys):
+    root = copy_generated_plist_project(tmp_path)
+    pbx = root / "Demo.xcodeproj/project.pbxproj"
+    pbx.write_text(pbx.read_text().replace("MARKETING_VERSION = 1.0;", 'MARKETING_VERSION = "";'))
+    _, data = run_json(root, capsys)
+    assert [f["severity"] for f in version_findings(data)] == ["BLOCKER"]
+
+
+def test_marketing_version_reference_in_plist_resolves(tmp_path, capsys):
+    root = copy_generated_plist_project(tmp_path)
+    plist = root / "Demo/Info.plist"
+    for ref in ("$(MARKETING_VERSION)", "${MARKETING_VERSION}"):
+        info = plistlib.loads(plist.read_bytes())
+        info["CFBundleShortVersionString"] = ref
+        plist.write_bytes(plistlib.dumps(info))
+        _, data = run_json(root, capsys)
+        assert version_findings(data) == []
+        assert pc.Project(root).info_value("CFBundleShortVersionString", "MARKETING_VERSION")[0] == "1.0"
+
+
+def test_release_config_wins_and_infoplist_key_is_used(tmp_path):
+    root = copy_generated_plist_project(tmp_path)
+    pbx = root / "Demo.xcodeproj/project.pbxproj"
+    text = pbx.read_text()
+    debug_end = text.index("name = Debug;", text.index("MARKETING_VERSION"))
+    text = text[:debug_end].replace("MARKETING_VERSION = 1.0;", "MARKETING_VERSION = 0.9;") + text[debug_end:]
+    pbx.write_text(text)
+    assert pc.Project(root).info_value("CFBundleShortVersionString", "MARKETING_VERSION")[0] == "1.0"
+    pbx.write_text(text.replace("MARKETING_VERSION = 1.0;", 'MARKETING_VERSION = "";').replace(
+        "MARKETING_VERSION = 0.9;", "INFOPLIST_KEY_CFBundleShortVersionString = 2.1;"))
+    assert pc.Project(root).info_value("CFBundleShortVersionString", "MARKETING_VERSION") == \
+        ("2.1", "build setting INFOPLIST_KEY_CFBundleShortVersionString")

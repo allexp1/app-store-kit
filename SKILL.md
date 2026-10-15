@@ -134,6 +134,8 @@ kit/screenshots/<locale>/<slot>/NN-id.png   final, validated, alpha-free
 kit/previews/<locale>/<slot>/*.mov|mp4      optional; a preview plays BEFORE the screenshots, so it is the first screen
 kit/creative/<locale>/universal.png         header + search-results asset, 5244×2950 (iOS/iPadOS 27+); header.* / search.*
                                             override one placement (references/creative-assets.md)
+kit/creative-src/                           the asset's sources (HTML, SVG, art); never inside creative/, where every
+                                            folder is read as a locale
 kit/iap/<product_id>/promo.png              optional (only if promoted)
 kit/growth.yaml                custom product pages, product page optimization tests, in-app events (templates/growth.example.yaml)
 kit/growth/<page>/screenshots|previews|creative/<locale>/...   a custom product page's media (same layout as above)
@@ -213,6 +215,13 @@ kit/release-history.yaml       version, build, date and commit of each release (
 
 Native sizes: iPhone 17 gives 1206 × 2622, iPad Pro 13-inch gives 2064 × 2752. Captures come out RGBA; that's fixed at compose time.
 
+**Apple Watch** (when the app embeds a watch app: App Store Connect refuses Add for Review without watch
+screenshots): build the watch scheme with its own `-derivedDataPath` (so it doesn't fight the iPhone build), install
+and launch it on a watch simulator (`xcrun simctl install` / `launch <udid> <bundle> <DEBUG fixture arguments>`),
+then `xcrun simctl io <udid> screenshot NN.png`. 1–10 per locale in `kit/screenshots/<locale>/watch/`, one size for
+all. asc_sync picks the display class from the pixel size: 410 × 502 or 422 × 514 Ultra, 416 × 496 Series 10/11,
+396 × 484 Series 7–9, 368 × 448 Series 4–6/SE, 312 × 390 Series 3.
+
 **6. Compose.** Pick **one final renderer:**
 - **Campaign** (designed sets: panoramas across panels, 3D devices, editorial type, RTL mirroring):
   `python3 scripts/campaign.py render KIT/campaign/campaign.yaml --install KIT`. Exact sizes, QA report, and an
@@ -223,7 +232,9 @@ Native sizes: iPhone 17 gives 1206 × 2622, iPad Pro 13-inch gives 2064 × 2752.
 Always strip alpha afterwards. Keep the other renderer as a cross-check.
 
 **7. Validate.**
-- Run `python3 scripts/validate_kit.py kit --platforms iphone,ipad --fix --report kit/validation.md`. It checks:
+- Run `python3 scripts/validate_kit.py kit --project PROJECT --fix --report kit/validation.md`. The platforms come
+  from `facts.yaml` `platforms:` and the slot folders (or `--platforms iphone,ipad`); a watch app found in the
+  project or the built .app/.ipa (a WATCHOS_DEPLOYMENT_TARGET target, an embedded Watch/ bundle) adds watch. It checks:
   - every file is an accepted size for its slot, PNG/JPEG, no alpha, sRGB/P3;
   - 1–10 per set, and required sets per locale (the iPhone Duo sets from April 2027);
   - previews (via `preview_check.py`) and the IAP promo image;
@@ -236,7 +247,9 @@ Always strip alpha afterwards. Keep the other renderer as a cross-check.
   Pick the poster frame before submitting: it can't be changed after approval;
 - the IAP promo image;
 - the header and search-results asset (`references/creative-assets.md`): one 5244×2950 universal PNG, key content
-  in Apple's art safe area, rendered with `scripts/render_creative.py` from `templates/creative-universal.html`;
+  in Apple's art safe area, rendered with `scripts/render_creative.py` from `templates/creative-universal.html`.
+  Optional, but easy to forget: App Store Connect shows "0 of 1 Header Asset", and on a first release it must go in
+  the same submission as the version. The status board lists it under "Before you submit"; ask the owner;
 - the website App Store badge (Apple's artwork, black by default, at least 40 px high) and the Smart App Banner once the app has an ID;
 - a press zip;
 - after launch, optionally: custom product pages, product page optimization and in-app events. See "Growth and
@@ -425,13 +438,20 @@ releasing, and for the buttons only you may press." The owner can switch any scr
 3. **Plan.** `asc_sync.py plan KIT [--locale …]` writes `connect-plan.md`. Summarise it in plain words, with the
    number of fields per language and the screenshots to upload, and the ✋ and 🌐 steps left.
 4. 🛑 **Apply** on the owner's yes: `asc_sync.py apply KIT --yes`. It re-reads everything it changed and records it in
-   `connect-progress.yaml`. Show the failures in plain words and fix or retry them.
+   `connect-progress.yaml`. Show the failures in plain words. After fixing a cause, run
+   `asc_sync.py apply KIT --retry-failed --yes`: it re-sends only the failed items of the same approved plan (no
+   re-plan, no finishing by hand); re-plan instead if apply refuses because something changed. An age-rating 403 is
+   the key's role, not a wrong answer: set it in the browser (App Information › Age Rating) and mark the step done.
+   Purchase texts in new languages go onto the purchase's in-flight version; while that version is in review, plan
+   skips them with a warning, so apply after the review.
 5. **Browser steps** (🌐): App Privacy labels, Mac and Vision Pro availability. The first in-app purchase goes for
    review from its own page (In-App Purchases › the purchase › Add for Review, 🛑 a yes); Apple removed the
    version page's In-App Purchases section. Use the autopilot loop below.
 6. **Person steps** (✋): agreements, tax, banking, DSA. Bring the browser to the button and wait.
-7. Run `connect_guide.py KIT --check` and `status_board.py KIT`. Then 🛑 `asc_sync.py submit KIT --yes` on its own
-   yes, and later 🛑 `asc_sync.py release KIT --yes`.
+7. Run `connect_guide.py KIT --check` and `status_board.py KIT --project PROJECT`. Its "Before you submit" list
+   must have no 🔴 (Apple Watch screenshots when the app has a watch app). Ask the owner, in so many words, whether
+   to add the header and search-results asset before the version is submitted, if there is none. Then 🛑
+   `asc_sync.py submit KIT --yes` on its own yes, and later 🛑 `asc_sync.py release KIT --yes`.
 8. Try `asc_sync.py … --dry-run` first whenever something looks unusual: it prints the exact requests without
    sending them.
 
@@ -516,7 +536,7 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/render_creative.py` | `HTML --out PNG [--kind universal\|header\|search] [--set NAME=FILE] [--guides JPG]`: header / search-results asset, RGB, plus a preview with Apple's safe areas |
 | `scripts/connect_guide.py` | `KIT` → `CONNECT-GUIDE.md` + `connect-guide.html` (+ `connect-guide.private.html` when `private.yaml` exists); reads `connect-progress.yaml`; `--check` lists steps needing update; `--init-progress`; exit 1 on a text over its limit |
 | `scripts/precheck.py` | `PROJECT [--kit KIT] [--json] [--strict] [--check-urls]`: the code against Apple's rules (`references/precheck-rules.md`) → `KIT/PRECHECK.md`; exit 2 blocker, 1 likely rejection, 0 otherwise; Semi checks go to "For Claude to judge", unscanned ones to "Not scanned"; reads `precheck-decisions.yaml` |
-| `scripts/status_board.py` | `KIT [--print]` → `KIT/STATUS.md` from progress, PRECHECK.md, connect-plan.json and connect-live.json; the "Next" line |
+| `scripts/status_board.py` | `KIT [--project DIR] [--print]` → `KIT/STATUS.md` from progress, PRECHECK.md, connect-plan.json and connect-live.json; the "Next" line; "Before you submit" (watch screenshots, header asset) |
 | `scripts/asc_api.py` | App Store Connect API client: ES256 JWT (cryptography or the openssl CLI), paging, 429 retry, upload operations, dry-run; key from args, `ASC_*` env, `connect.yaml api:` or altool's folders |
 | `scripts/asc_sync.py` | `status\|plan\|apply\|submit\|release KIT [--locale L] [--only text,media,iap,review,age,accessibility,build,release,growth] [--dry-run] [--yes] [--pause\|--resume\|--all]`; `plan --reupload-unverified`; `submit --growth IDS [--include-draft-items] [--auto-release-ok]`; `release --start-test ID`, `release --cpp-visibility ID=on\|off`; `submit --iap PRODUCT_IDS`; gates as in **Approvals** (exit 2 without `--yes`; `--dry-run` needs none) |
 | `scripts/growth.py` | `KIT`: reads and checks `growth.yaml` (limits, enums, dates) and lists pages, tests and events; exit 1 on a problem |
@@ -529,7 +549,7 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/subscriptions.py` | `check\|status\|plan\|apply\|submit KIT [--dry-run] [--yes] [--price-increase-ok]`: groups, products, localizations, prices, offers, review screenshots; no deletes |
 | `scripts/testflight.py` | `status\|plan\|apply\|submit-beta\|feedback KIT`; `plan --build N [--submit-beta]`; writes need `--yes`; `feedback` → `TESTFLIGHT-FEEDBACK.md` |
 | `scripts/pricing.py` | `check\|status\|plan\|apply KIT [--dry-run] [--yes] [--remove-territories-ok]`: prices from Apple's price points, scheduled changes, territories, pre-orders |
-| `scripts/campaign.py` | `analyze`, `init KIT`, `check`, `concepts` (six directions → contact sheet), `render [--engine] [--locale]... [--slot]... [--panel N] [--install KIT] [--offline]`, `eject`, `validate OUT`, `canvas` / `canvas-link` (Claude Design), `engines`, `presets`; code in `scripts/studio/` |
+| `scripts/campaign.py` | `analyze`, `init KIT`, `check`, `concepts` (six directions → contact sheet), `render [--engine] [--locale]... [--slot]... [--panel N] [--install KIT] [--offline]`, `eject`, `validate OUT`, `canvas` / `canvas-link` (Claude Design), `review-page OUT` (one HTML page when the canvas isn't available), `engines`, `presets`; code in `scripts/studio/` |
 | `scripts/snapshot_rules.py` | `freeze KIT`, `check`: page-text hashes of the Apple sources |
 | `scripts/rules.json` | the baseline rule table (fetched 2026-10-14) |
 

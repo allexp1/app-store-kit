@@ -6,9 +6,11 @@ Usage:
   asc_sync.py plan    KIT [--locale L ...] [--only AREAS]
                                                compare the kit with the live account; writes KIT/connect-plan.json
                                                and KIT/connect-plan.md (the page the owner reads before saying yes)
-  asc_sync.py apply   KIT --yes [--only AREAS] [--dry-run]
+  asc_sync.py apply   KIT --yes [--only AREAS] [--dry-run] [--retry-failed]
                                                execute connect-plan.json in a safe order, re-read every change,
-                                               write KIT/connect-assets.json and update KIT/connect-progress.yaml
+                                               write KIT/connect-assets.json and update KIT/connect-progress.yaml;
+                                               --retry-failed re-sends only the items an earlier apply of this plan
+                                               marked failed
   asc_sync.py submit  KIT --yes [--growth IDS] [--iap PRODUCT_IDS] [--include-draft-items] [--auto-release-ok]
                     [--dry-run]                reviewSubmissions: the draft (or a new one), the version, submit. With
                                                --growth, also (after launch: only) those growth.yaml items. With
@@ -28,7 +30,8 @@ Usage:
 
 apply runs only an approved, unused plan without errors: it refuses when a planned file, the app, the version (its
 id, version string or state), a purchase's live price or the live media the plan replaces changed since `plan` (run
-plan again), and marks the plan used once it ran. In-app purchase prices are set from Apple's price points (iap
+plan again), and marks the plan used once it ran, recording each item's outcome (done, failed, or browser: the API
+answered 403 on the age rating, which is a warning for the owner to set it in the browser, not a failure). In-app purchase prices are set from Apple's price points (iap
 area); a price with no exact point is a warning and stays as it is.
 plan --reupload-unverified replaces live files that match only by size (no recorded checksum).
 
@@ -43,7 +46,8 @@ Auth: --key-id / --issuer-id / --key-path, else ASC_KEY_ID / ASC_ISSUER_ID / ASC
 Kit files read: facts.yaml (app.bundle_id, app.version, app.build, locales, monetization.iap, first_version),
 metadata.<locale>.yaml, connect.yaml (review_contact, content_rights, age_rating, accessibility, version.release,
 version.phased_release, privacy), private.yaml (phone, demo account: sent, never written anywhere),
-review-notes.md, screenshots/<locale>/<slot>/*, previews/<locale>/<slot>/*, iap/<file>, connect-assets.json.
+review-notes.md, screenshots/<locale>/<slot>/* (screenshots/<locale>/watch/: the Apple Watch display class is picked
+per file by its pixel size), previews/<locale>/<slot>/*, iap/<file>, connect-assets.json.
 
 Private values never reach the plan, the progress file or the output: they show as [private].
 --dry-run prints every write that would be sent (private values masked) and changes nothing.
@@ -90,6 +94,18 @@ SLOT_CLASS = {
     "ipad-13": "IPAD_13_DISPLAY",
     "ipad-11": "IPAD_11_DISPLAY",
 }
+# KIT/screenshots/<locale>/watch/: one folder, the display class picked per file by its pixel size (portrait).
+# Asset Library AppAssetLibraryDisplayClass values (asc-api.md §4a); groups come from appAssetLibraryRefData with
+# platform WATCH_APP_STORE. UNCONFIRMED: that Ultra 3 (422×514) files go to WATCH_ULTRA (the enum has one Ultra class).
+WATCH_SLOT = "watch"
+WATCH_CLASS = {
+    (422, 514): "WATCH_ULTRA",       # Ultra 3
+    (410, 502): "WATCH_ULTRA",       # Ultra, Ultra 2
+    (416, 496): "WATCH_SERIES_10",   # Series 10/11, 46 mm
+    (396, 484): "WATCH_SERIES_7",    # Series 7/8/9, 45 mm
+    (368, 448): "WATCH_SERIES_4",    # Series 4-6, SE, 44 mm
+    (312, 390): "WATCH_SERIES_3",    # Series 3, 42 mm
+}
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
 VIDEO_EXT = (".mov", ".mp4", ".m4v")
 # Creative assets (header + search results, iOS/iPadOS 27+): KIT/creative/<locale>/<name>.png|jpg|mp4|mov.
@@ -129,6 +145,9 @@ PRICE_TERRITORY = {"USD": "USA", "GBP": "GBR", "JPY": "JPN", "CAD": "CAN", "AUD"
                    "CNY": "CHN", "INR": "IND", "BRL": "BRA", "MXN": "MEX", "KRW": "KOR", "SEK": "SWE"}
 IAP_EDITABLE = {"PREPARE_FOR_SUBMISSION", "REJECTED", "DEVELOPER_ACTION_NEEDED", "MISSING_METADATA",
                 "READY_TO_SUBMIT"}
+# An in-app purchase version Apple is reviewing (or about to): it can't take edits and a second version can't be
+# created beside it (POST /v1/inAppPurchaseVersions → 409). asc-api.md §6.
+IAP_IN_REVIEW = {"READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW"}
 CONTENT_RIGHTS = {"uses_third_party": "USES_THIRD_PARTY_CONTENT", "none": "DOES_NOT_USE_THIRD_PARTY_CONTENT"}
 CATEGORIES = {"BOOKS", "BUSINESS", "DEVELOPER_TOOLS", "EDUCATION", "ENTERTAINMENT", "FINANCE", "FOOD_AND_DRINK",
               "GAMES", "GRAPHICS_AND_DESIGN", "HEALTH_AND_FITNESS", "LIFESTYLE", "MAGAZINES_AND_NEWSPAPERS",
@@ -146,6 +165,13 @@ PLAN_JSON, PLAN_MD, LIVE_JSON, ASSETS_JSON = "connect-plan.json", "connect-plan.
 
 class SyncError(Exception):
     pass
+
+
+class BrowserStep(SyncError):
+    """Not a failure: the API refused for a reason only the browser (or the person) gets past. apply warns."""
+
+
+AGE_BROWSER = "set it in the browser (App Information › Age Rating)"
 
 
 # ---------------------------------------------------------------------------------------------------- kit
@@ -221,8 +247,31 @@ def load_json(p, default=None):
     return json.loads(p.read_text()) if p.exists() else (default if default is not None else {})
 
 
+def image_px(path):
+    """(width, height) of an image file, or None when it can't be read."""
+    try:
+        from PIL import Image   # the kit's image library (validate_kit.py); only needed for watch screenshots
+        with Image.open(path) as im:
+            return im.size
+    except Exception:   # noqa: BLE001 - an unreadable file is reported, not fatal
+        return None
+
+
+def watch_class(path):
+    """(display class, None) for a watch screenshot by its pixel size, or (None, why not)."""
+    px = image_px(path)
+    if not px:
+        return None, "can't read its pixel size"
+    cls = WATCH_CLASS.get(px) or WATCH_CLASS.get((px[1], px[0]))
+    if cls:
+        return cls, None
+    sizes = ", ".join(f"{w}×{h}" for w, h in WATCH_CLASS)
+    return None, f"{px[0]}×{px[1]} isn't an Apple Watch screenshot size ({sizes})"
+
+
 def local_slots(kit, locale, base_dir=None):
-    """{(placementType, displayClass): [(slot folder, file path), ...]} for one locale, plus unmapped slot names.
+    """{(placementType, displayClass): [(slot folder, file path), ...]} for one locale, plus warnings for what was
+    skipped (a slot with no display class, a watch file of no watch size).
     base_dir: where screenshots/ and previews/ live (the kit, or a growth item's folder)."""
     out, unmapped = {}, []
     for base, ptype, exts in (("screenshots", "APP_SCREENSHOT", IMAGE_EXT), ("previews", "APP_PREVIEW", VIDEO_EXT)):
@@ -235,9 +284,18 @@ def local_slots(kit, locale, base_dir=None):
             files = sorted(f for f in slot.iterdir() if f.suffix.lower() in exts)
             if not files:
                 continue
+            if slot.name == WATCH_SLOT and ptype == "APP_SCREENSHOT":
+                for f in files:
+                    cls, why = watch_class(f)
+                    if cls:
+                        out.setdefault((ptype, cls), []).append((slot.name, f))
+                    else:
+                        unmapped.append(f"{f.relative_to(kit.path).as_posix()}: {why}; skipped")
+                continue
             cls = SLOT_CLASS.get(slot.name)
             if not cls:
-                unmapped.append(slot.relative_to(kit.path).as_posix())
+                unmapped.append(f"{slot.relative_to(kit.path).as_posix()}: no Asset Library display class for this "
+                                f"slot; skipped")
                 continue
             out.setdefault((ptype, cls), []).extend((slot.name, f) for f in files)
     return out, unmapped
@@ -303,7 +361,7 @@ def is_first(versions):
 
 
 def placement_groups(refdata):
-    """{displayClass: placementGroup id} for iOS, found anywhere in the appAssetLibraryRefData document.
+    """{displayClass: placementGroup id} for iOS and Apple Watch, found anywhere in appAssetLibraryRefData.
     Group ids are runtime strings (asc-api.md §4a): never hard-coded."""
     found = {}
 
@@ -316,7 +374,7 @@ def placement_groups(refdata):
                 or node.get("id")
             plat = str(node.get("platform") or "IOS").upper()
             if isinstance(cls, str) and isinstance(gid, str) and \
-                    plat in ("IOS", "IPHONE_OS", "IPAD_OS", "IPHONE_APP_STORE", "IPAD_APP_STORE"):
+                    plat in ("IOS", "IPHONE_OS", "IPAD_OS", "IPHONE_APP_STORE", "IPAD_APP_STORE", "WATCH_APP_STORE"):
                 if not gid.startswith("IMESSAGE"):
                     found.setdefault(cls, gid)
             for v in node.values():
@@ -393,7 +451,14 @@ def read_live(client, kit, areas):
         full = get_one(client, f"/v1/appInfos/{info['id']}", {"include": "primaryCategory,secondaryCategory"})
         live["categories"] = {"primary": rel_id(full, "primaryCategory"), "secondary": rel_id(full, "secondaryCategory")}
     if info and "age" in areas:
-        live["age"] = get_one(client, f"/v1/appInfos/{info['id']}/ageRatingDeclaration")
+        # Apple documents only the appInfo route for reading the declaration (asc-api.md §2); 403 is a key that
+        # may not read it: the answers then go in the browser.
+        try:
+            live["age"] = get_one(client, f"/v1/appInfos/{info['id']}/ageRatingDeclaration")
+        except ASCError as e:
+            if e.status != 403:
+                raise
+            live["age_forbidden"] = True
 
     if source and live["version_action"] != "locked":
         sid = source["id"]
@@ -483,27 +548,39 @@ def iap_price_point(client, iid, territory, amount):
     return next((p for p in pts if same_amount(attrs(p).get("customerPrice"), amount)), None)
 
 
+def iap_versions(client, iid):
+    """The purchase's versions (GET /v2/inAppPurchases/{id}/versions), or None when it has none to list (404: a
+    purchase still on the pre-4.4.1 model, whose localizations hang on the purchase itself)."""
+    try:
+        return client.get_all(f"/v2/inAppPurchases/{iid}/versions", {"limit": 50})
+    except ASCError as e:
+        if e.status != 404:
+            raise
+        return None
+
+
 def read_iap(client, app_id, pid, kit, details=True):
-    out = {"iap": None, "version": None, "versions": [], "locs": {}, "image": None, "image_kind": "v2",
-           "price": None, "price_point": None, "want_point": None}
+    out = {"iap": None, "version": None, "versions": [], "versioned": True, "busy": None, "locs": {}, "image": None,
+           "image_kind": "v2", "price": None, "price_point": None, "want_point": None}
     found = client.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"filter[productId]": pid, "limit": 200})
     iap = next((x for x in found if attrs(x).get("productId") == pid), None)
     out["iap"] = iap
     if not iap or not details:
         return out
     iid = iap["id"]
-    try:
-        out["versions"] = client.get_all(f"/v2/inAppPurchases/{iid}/inAppPurchaseVersions", {"limit": 50})
-    except ASCError as e:
-        if e.status != 404:
-            raise
-        # Live 2026-10-14: "The relationship 'inAppPurchaseVersions' does not exist" on an unversioned purchase;
-        # its review screenshot is the v1 appStoreReviewScreenshot.
-        out["image_kind"] = "v1"
+    # The relationship is `versions` (Apple's docs). The kit used to ask for `inAppPurchaseVersions`, got 404 "The
+    # relationship 'inAppPurchaseVersions' does not exist" (live 2026-10-14), took every purchase for unversioned and
+    # then POSTed a second version beside the in-flight one: 409 (live 2026-10-15).
+    versions = iap_versions(client, iid)
+    if versions is None:
+        out["versioned"], out["image_kind"] = False, "v1"
+    out["versions"] = versions or []
     ver = next((v for v in out["versions"] if attrs(v).get("state") in IAP_EDITABLE), None)
     out["version"] = ver
+    if not ver:
+        out["busy"] = next((v for v in out["versions"] if attrs(v).get("state") in IAP_IN_REVIEW), None)
     if ver:
-        locs = client.get_all(f"/v1/inAppPurchaseVersions/{ver['id']}/inAppPurchaseLocalizations", {"limit": 200})
+        locs = client.get_all(f"/v1/inAppPurchaseVersions/{ver['id']}/localizations", {"limit": 200})
         out["locs"] = {attrs(x).get("locale"): x for x in locs}
         try:
             doc = client.get(f"/v1/inAppPurchaseVersions/{ver['id']}/image")
@@ -512,7 +589,11 @@ def read_iap(client, app_id, pid, kit, details=True):
             if e.status not in (400, 404):
                 raise
             out["image_kind"] = "v1"
-    else:
+    elif out["versions"]:   # compare with the newest version's texts; apply makes the next version
+        newest = max(out["versions"], key=lambda v: attrs(v).get("version") or 0)
+        locs = client.get_all(f"/v1/inAppPurchaseVersions/{newest['id']}/localizations", {"limit": 200})
+        out["locs"] = {attrs(x).get("locale"): x for x in locs}
+    else:   # unversioned: the deprecated purchase-level list (asc-api.md §6)
         try:
             locs = client.get_all(f"/v2/inAppPurchases/{iid}/inAppPurchaseLocalizations", {"limit": 200})
             out["locs"] = {attrs(x).get("locale"): x for x in locs}
@@ -874,6 +955,11 @@ def plan_age(P):
     cur = P.live.get("age")
     if not desired:
         return
+    if P.live.get("age_forbidden"):
+        P.warnings.append(f"age rating: the API key may not read the declaration (403); {AGE_BROWSER}")
+        P.browser.append({"text": f"Age rating: {AGE_BROWSER[0].upper()}{AGE_BROWSER[1:]} (the API key got 403).",
+                          "progress_key": "app-information/age-rating-set-up-age-ratings", "done": False})
+        return
     if not cur:
         P.warnings.append("no age rating declaration found on the app info")
         return
@@ -979,8 +1065,7 @@ def plan_media(P):
     any_local = False
     for loc in kit.locales:
         slots, unmapped = local_slots(kit, loc)
-        for u in unmapped:
-            P.warnings.append(f"{u}: no Asset Library display class for this slot; skipped")
+        P.warnings += unmapped
         if not slots:
             if loc != kit.primary:
                 P.notes.append(f"{loc} has no screenshots folder: Apple shows the {kit.primary} screenshots there.")
@@ -1184,8 +1269,7 @@ def slot_items(P, base, loc, singles, cur, assets_map, owner):
     placements, live_assets = (cur or {}).get("placements") or [], (cur or {}).get("assets") or {}
     out = []
     slots, unmapped = local_slots(kit, loc, base) if base else ({}, [])
-    for u in unmapped:
-        P.warnings.append(f"{u}: no Asset Library display class for this slot; skipped")
+    P.warnings += unmapped
     for (ptype, cls), entries in slots.items():
         label = "+".join(dict.fromkeys(s for s, _ in entries))
         group = groups.get(cls)
@@ -1576,8 +1660,15 @@ def plan_iap(P):
         name = f.get("display_name") or f.get("reference_name") or pid
         it = {"product_id": pid, "name": name, "iap_id": (iap or {}).get("id"), "create_iap": None,
               "version_id": (L.get("version") or {}).get("id"), "image_kind": L.get("image_kind", "v2"),
-              "locs": [], "image": None}
+              "versioned": L.get("versioned", True), "locs": [], "image": None}
         changes = []
+        busy = L.get("busy")
+        if busy:
+            P.warnings.append(f"{pid}: its in-app purchase version is {attrs(busy).get('state')}, so Apple takes no "
+                              f"new names, descriptions or images until that review ends (and no second version "
+                              f"beside it); those are left for the next plan")
+        # A new version gets made at apply: the live localizations belong to the version before it.
+        new_version = bool(iap) and it["versioned"] and not it["version_id"] and not busy
         if not iap:
             typ = IAP_TYPE.get(str(f.get("type", "")).strip().lower())
             if not typ:
@@ -1600,13 +1691,15 @@ def plan_iap(P):
             if bad:
                 P.warnings.append(f"{pid} {loc}: {', '.join(bad)} over the limit (30 / 45 characters); skipped")
                 continue
+            if busy:
+                continue
             cur = (L.get("locs") or {}).get(loc)
             ch = diff(attrs(cur), desired, loc)
             if ch:
-                it["locs"].append({"locale": loc, "target_id": (cur or {}).get("id"),
+                it["locs"].append({"locale": loc, "target_id": None if new_version else (cur or {}).get("id"),
                                    "attributes": {c["field"]: desired[c["field"]] for c in ch}, "desired": desired})
                 changes += ch
-        rf = iap_review_file(kit, pid)
+        rf = None if busy else iap_review_file(kit, pid)
         if rf:
             img = L.get("image")
             sha, size = sha256(rf), rf.stat().st_size
@@ -1624,7 +1717,7 @@ def plan_iap(P):
                                "action": action, "old_id": (img or {}).get("id")}
                 changes.append({"locale": None, "field": "review screenshot", "old": attrs(img).get("fileName"),
                                 "new": f"{rf.name} ({action}" + (f": {UNKNOWN_WHY})" if how == "unknown" else ")")})
-        else:
+        elif not busy:
             P.warnings.append(f"{pid}: no review screenshot found (connect.yaml iap[].review_screenshot or iap/)")
         amount, terr, why = iap_price_want(f)
         if why:
@@ -1847,6 +1940,8 @@ class Ctx:
         self._library = None
         self.creative_uploads = {}
         self.growth_locs = {}   # (parent kind, growth id, locale) → localization id made or found during apply
+        self.outcomes = {}      # plan item id → "done" | "failed" | "browser" (this run)
+        self.browser = []       # (item title, why): steps the API refused that the browser does
 
     def need_version(self):
         if not self.version_id:
@@ -2050,9 +2145,24 @@ def op_review_detail(ctx, it):
 
 
 def op_age_rating(ctx, it):
+    """PATCH /v1/ageRatingDeclarations/{id}, re-read through GET /v1/appInfos/{id}/ageRatingDeclaration: Apple
+    documents no GET on the declaration itself, and it answered 403 there (live 2026-10-15). A 403 on either call
+    is the key's role, not a wrong answer: it becomes a browser step instead of a failed one."""
     rid = it["target_id"]
-    ctx.client.patch(f"/v1/ageRatingDeclarations/{rid}", body("ageRatingDeclarations", it["attributes"], id=rid))
-    verify(ctx, f"/v1/ageRatingDeclarations/{rid}", it["attributes"])
+    try:
+        ctx.client.patch(f"/v1/ageRatingDeclarations/{rid}", body("ageRatingDeclarations", it["attributes"], id=rid))
+        if not ctx.client.dry_run:
+            info = ctx.app_info_id
+            got = get_one(ctx.client, f"/v1/appInfos/{info}/ageRatingDeclaration") if info else None
+            if not got or got.get("id") != rid:
+                raise SyncError("re-read shows another age rating declaration on the app info")
+            bad = [c["field"] for c in diff(attrs(got), it["attributes"])]
+            if bad:
+                raise SyncError(f"re-read of the age rating differs in {', '.join(bad)}")
+    except ASCError as e:
+        if e.status != 403:
+            raise
+        raise BrowserStep(f"the API key got 403 ({e.method} {e.path}); {AGE_BROWSER}") from e
     ctx.record("app-information/age-rating-set-up-age-ratings", note="Answers set through the API")
 
 
@@ -2216,31 +2326,42 @@ def op_iap(ctx, it):
         r = c.post("/v2/inAppPurchases", body("inAppPurchases", it["create_iap"],
                                               relationships={"app": ref("apps", ctx.app_id)}))
         iid = r["data"]["id"]
+    versioned = it.get("versioned", True)
     vid = it.get("version_id")
-    if not vid and iid and it.get("image_kind") != "v1" and (it["locs"] or it.get("image")):
-        try:
-            vid = (existing(ctx, f"/v2/inAppPurchases/{iid}/inAppPurchaseVersions",
-                            lambda a: a.get("state") in IAP_EDITABLE) or {}).get("id")
-        except ASCError as e:
-            if e.status != 404:
-                raise
-    if not vid and (it["locs"] or it.get("image")):
-        r = c.post("/v1/inAppPurchaseVersions", body("inAppPurchaseVersions", None,
-                                                    relationships={"inAppPurchase": ref("inAppPurchases", iid)}))
-        vid = r["data"]["id"]
+    needs_version = versioned and (it["locs"] or (it.get("image") and it.get("image_kind") != "v1"))
+    if needs_version and not vid and iid:
+        vid = iap_edit_version(ctx, iid)
+    if needs_version and not vid:
+        vid = iap_new_version(ctx, iid)
+    # Versioned: v2 localizations on the version (relationship `version`), listed at /v1/inAppPurchaseVersions/{id}/
+    # localizations. Unversioned (no `versions` to list): the deprecated v1 localizations on the purchase itself,
+    # which is what the browser does for a purchase still in its first review cycle.
+    if versioned:
+        lv, list_path, rel = "/v2", f"/v1/inAppPurchaseVersions/{vid}/localizations", \
+            {"version": ref("inAppPurchaseVersions", vid)}
+    else:
+        lv, list_path, rel = "/v1", f"/v2/inAppPurchases/{iid}/inAppPurchaseLocalizations", \
+            {"inAppPurchaseV2": ref("inAppPurchases", iid)}
     for loc in it["locs"]:
-        lid = loc.get("target_id") or (existing(
-            ctx, f"/v1/inAppPurchaseVersions/{vid}/inAppPurchaseLocalizations",
-            lambda a: a.get("locale") == loc["locale"]) or {}).get("id") if vid else loc.get("target_id")
-        if lid:
-            c.patch(f"/v2/inAppPurchaseLocalizations/{lid}", body("inAppPurchaseLocalizations", loc["attributes"],
-                                                                  id=lid))
+        def find():
+            return (existing(ctx, list_path, lambda a: a.get("locale") == loc["locale"]) or {}).get("id")
+        lid = loc.get("target_id") or find()
+        if not lid:
+            try:
+                r = c.post(f"{lv}/inAppPurchaseLocalizations", body(
+                    "inAppPurchaseLocalizations", {"locale": loc["locale"], **set_only(loc["desired"])},
+                    relationships=rel))
+                lid = r["data"]["id"]
+            except ASCError as e:   # 409: the locale is there after all (made in the browser meanwhile): change it
+                lid = find() if e.status == 409 else None
+                if not lid:
+                    raise
+                c.patch(f"{lv}/inAppPurchaseLocalizations/{lid}", body("inAppPurchaseLocalizations",
+                                                                       loc["attributes"], id=lid))
         else:
-            r = c.post("/v2/inAppPurchaseLocalizations", body(
-                "inAppPurchaseLocalizations", {"locale": loc["locale"], **set_only(loc["desired"])},
-                relationships={"inAppPurchaseVersion": ref("inAppPurchaseVersions", vid)}))
-            lid = r["data"]["id"]
-        got = verify(ctx, f"/v2/inAppPurchaseLocalizations/{lid}", loc["attributes"])
+            c.patch(f"{lv}/inAppPurchaseLocalizations/{lid}", body("inAppPurchaseLocalizations", loc["attributes"],
+                                                                   id=lid))
+        got = verify(ctx, f"{lv}/inAppPurchaseLocalizations/{lid}", loc["attributes"])
         if loc["locale"] == kit.primary:
             ctx.record(f"iap/{cg.slug(it['name'])}-display-name-and-description-scroll-down-press-add",
                        {"Display Name": got.get("name"), "Description": got.get("description")})
@@ -2250,9 +2371,9 @@ def op_iap(ctx, it):
         if it.get("image_kind") == "v1":
             typ, coll, rel = "inAppPurchaseAppStoreReviewScreenshots", "/v1/inAppPurchaseAppStoreReviewScreenshots", \
                 {"inAppPurchaseV2": ref("inAppPurchases", iid)}
-        else:
+        else:   # POST /v2/inAppPurchaseImages relates to the version as `version` (Apple's create request)
             typ, coll, rel = "inAppPurchaseImages", "/v2/inAppPurchaseImages", \
-                {"inAppPurchaseVersion": ref("inAppPurchaseVersions", vid)}
+                {"version": ref("inAppPurchaseVersions", vid)}
         if img.get("old_id"):
             c.delete(f"{coll}/{img['old_id']}")
         r = c.post(coll, body(typ, {"fileName": path.name, "fileSize": path.stat().st_size}, relationships=rel))
@@ -2269,6 +2390,38 @@ def op_iap(ctx, it):
                    note=f"Review screenshot {path.name} uploaded")
     if it.get("price"):
         op_iap_price(ctx, it, iid)
+
+
+def iap_edit_version(ctx, iid):
+    """The id of the purchase's version that takes edits now, or None. One in review: SyncError (Apple allows no
+    second version beside it)."""
+    if ctx.client.dry_run or str(iid).startswith("DRYRUN"):
+        return None
+    versions = iap_versions(ctx.client, iid) or []
+    ver = next((v for v in versions if attrs(v).get("state") in IAP_EDITABLE), None)
+    if ver:
+        return ver["id"]
+    busy = next((v for v in versions if attrs(v).get("state") in IAP_IN_REVIEW), None)
+    if busy:
+        raise SyncError(f"its version {busy['id']} is {attrs(busy).get('state')}: Apple takes no edits and no new "
+                        f"version until that review ends")
+    return None
+
+
+def iap_new_version(ctx, iid):
+    """POST /v1/inAppPurchaseVersions (relationship inAppPurchase). A 409 means a version is in flight after all:
+    use it when it takes edits instead of failing."""
+    try:
+        r = ctx.client.post("/v1/inAppPurchaseVersions", body(
+            "inAppPurchaseVersions", None, relationships={"inAppPurchase": ref("inAppPurchases", iid)}))
+        return r["data"]["id"]
+    except ASCError as e:
+        if e.status != 409:
+            raise
+        vid = iap_edit_version(ctx, iid)
+        if not vid:
+            raise
+        return vid
 
 
 def op_iap_price(ctx, it, iid):
@@ -2308,16 +2461,25 @@ OPS = {"create_version": op_create_version, "version_attrs": op_version_attrs, "
        "iap": op_iap, "cpp": op_cpp, "test": op_test, "event": op_event, "growth_slot": op_growth_slot}
 
 
-def run_apply(ctx, only=None, log=print):
-    """Execute the plan's items in a safe order. Returns the list of (item title, error)."""
+def run_apply(ctx, only=None, log=print, items=None):
+    """Execute the plan's items (or just `items`) in a safe order. Returns the list of (item title, error). An item
+    the API sends to the browser (BrowserStep) is no error: it lands in ctx.browser and ctx.outcomes says so."""
     errors, failed_keys = [], set()
-    items = sorted(items_to_run(ctx.pj, only), key=lambda i: (ORDER.index(i["area"]), ctx.pj["items"].index(i)))
+    items = items_to_run(ctx.pj, only) if items is None else items
+    items = sorted(items, key=lambda i: (ORDER.index(i["area"]), ctx.pj["items"].index(i)))
     for it in items:
         before = set(ctx.progress)
         try:
             OPS[it["op"]](ctx, it)
+            ctx.outcomes[it["id"]] = "done"
             log(f"done: {it['title']}")
+        except BrowserStep as e:
+            ctx.browser.append((it["title"], ctx.kit.mask(str(e))))
+            ctx.outcomes[it["id"]] = "browser"
+            failed_keys |= set(ctx.progress) - before
+            log(f"warning: {it['title']}: {ctx.kit.mask(str(e))}")
         except (ASCError, SyncError, OSError) as e:
+            ctx.outcomes[it["id"]] = "failed"
             errors.append((it["title"], ctx.kit.mask(str(e))))
             failed_keys |= set(ctx.progress) - before
             log(f"FAILED: {it['title']}: {ctx.kit.mask(str(e))}")
@@ -2499,6 +2661,20 @@ def check_plan(ctx, items):
     return out
 
 
+def last_results(pj):
+    """{plan item id: its latest outcome} over every apply of this plan ("done", "failed" or "browser")."""
+    out = {}
+    for r in (pj.get("applied") or {}).get("results") or []:
+        out[r.get("item")] = r.get("result")
+    return out
+
+
+def retry_items(pj, only):
+    """The plan items whose latest apply failed (and never came back done), limited to --only."""
+    last = last_results(pj)
+    return [it for it in pj["items"] if last.get(it["id"]) == "failed" and (not only or it["area"] in only)]
+
+
 def cmd_apply(client, kit, args, poll_wait=5):
     path = kit.path / PLAN_JSON
     if not path.exists():
@@ -2513,16 +2689,34 @@ def cmd_apply(client, kit, args, poll_wait=5):
               "plan to the owner.")
         return 1
     only = parse_only(args.only) if args.only else None
-    items = items_to_run(pj, only)
     applied = pj.get("applied") or {}
     done_areas = set(applied.get("areas") or [])
-    work = {it["area"] for it in items if it["area"] != "version"}
-    if applied and (work & done_areas or not work):
-        print(f"Refused: this plan was already applied on {applied.get('at')} "
-              f"({', '.join(sorted(done_areas)) or 'version'}). Run `asc_sync.py plan KIT` again: it picks up what "
-              f"exists now. Show the new plan to the owner before applying it.")
-        return 1
+    retry = getattr(args, "retry_failed", False)
+    if retry:
+        # The owner's yes covered these exact items; the ones that went through are never sent again.
+        if not applied:
+            print("Refused: --retry-failed re-sends what an earlier apply of this plan failed, and this plan wasn't "
+                  "applied yet. Run apply without it.")
+            return 1
+        items, work = retry_items(pj, only), set()
+        if not items:
+            print("Nothing to retry: no item of this plan is marked failed" + (" in those areas" if only else "") + ".")
+            return 0
+    else:
+        items = items_to_run(pj, only)
+        work = {it["area"] for it in items if it["area"] != "version"}
+        if applied and (work & done_areas or not work):
+            failed = retry_items(pj, only)
+            print(f"Refused: this plan was already applied on {applied.get('at')} "
+                  f"({', '.join(sorted(done_areas)) or 'version'}). "
+                  + (f"{len(failed)} item(s) failed then: `asc_sync.py apply KIT --retry-failed --yes` re-sends only "
+                     f"those. " if failed else "")
+                  + "Or run `asc_sync.py plan KIT` again: it picks up what exists now. Show the new plan to the owner "
+                    "before applying it.")
+            return 1
     ctx = Ctx(client, kit, pj, poll_wait=poll_wait)
+    if retry and not ctx.version_id and applied.get("version_id"):
+        ctx.version_id = applied["version_id"]   # the version an earlier run of this plan created
     problems = check_plan(ctx, items)
     if problems:
         print("Refused: App Store Connect or the kit changed since the owner approved this plan. "
@@ -2532,25 +2726,37 @@ def cmd_apply(client, kit, args, poll_wait=5):
         return 1
     if pj.get("auto_release"):
         print(f"note: {AUTO_RELEASE_NOTE.format(rt=pj['auto_release'])}; submit will need --auto-release-ok.")
-    errors = run_apply(ctx, only)
+    if retry:
+        print(f"retrying {len(items)} failed item(s): {', '.join(it['title'] for it in items)}")
+    errors = run_apply(ctx, only, items=items)
     if client.dry_run:
         print_recorded(client, kit)
         print(f"dry run: {len(client.recorded)} call(s) would be sent; nothing changed")
     else:
         (kit.path / ASSETS_JSON).write_text(json.dumps(ctx.assets, indent=2, ensure_ascii=False) + "\n")
         write_progress(kit, ctx.progress)
-        # The yes covered this plan once: mark it used, so running apply again can't replay it.
-        failed = {t for t, _ in errors}
+        # The yes covered this plan once: record what each item did, so running apply again can't replay it and
+        # --retry-failed re-sends only what failed.
         pj["applied"] = {"at": dt.datetime.now().isoformat(timespec="seconds"),
                          "areas": sorted(done_areas | work),
+                         "version_id": ctx.version_id if not str(ctx.version_id or "").startswith("DRYRUN")
+                         else applied.get("version_id"),
                          "results": (applied.get("results") or []) + [
-                             {"item": it["id"], "title": it["title"],
-                              "result": "failed" if it["title"] in failed else "done"} for it in items],
-                         "errors": [{"title": t, "error": e} for t, e in errors]}
+                             {"item": it["id"], "title": it["title"], "result": ctx.outcomes.get(it["id"], "failed")}
+                             for it in items],
+                         "errors": [{"title": t, "error": e} for t, e in errors],
+                         "browser": (applied.get("browser") or []) + [{"title": t, "why": w} for t, w in ctx.browser]}
+        if applied.get("retried") or retry:
+            pj["applied"]["retried"] = (applied.get("retried") or []) + ([pj["applied"]["at"]] if retry else [])
         path.write_text(json.dumps(kit.mask_obj(pj), indent=2, ensure_ascii=False) + "\n")
-        print(f"applied {len(items) - len(errors)} of {len(items)} item(s); "
-              f"updated {cg.PROGRESS_FILE} ({len(ctx.progress)} step(s)) and {ASSETS_JSON}; "
-              f"the plan is now used up" + ("" if not errors else ": run plan again for what failed"))
+        tail = "" if not errors else (": retry what failed with `asc_sync.py apply KIT --retry-failed --yes`, or "
+                                      "run plan again")
+        print(f"applied {len(items) - len(errors) - len(ctx.browser)} of {len(items)} item(s)"
+              + (f", {len(ctx.browser)} left for the browser" if ctx.browser else "")
+              + f"; updated {cg.PROGRESS_FILE} ({len(ctx.progress)} step(s)) and {ASSETS_JSON}; "
+              f"the plan is now used up" + tail)
+    for title, why in ctx.browser:
+        print(f"warning: {title}: {why}")
     for title, err in errors:
         print(f"error: {title}: {err}")
     return 1 if errors else 0
@@ -2603,8 +2809,7 @@ def iap_targets(client, iap):
     """The (type, id) pairs a draft item can name a purchase by: the purchase itself or one of its versions."""
     out = {("inAppPurchases", iap["id"])}
     try:
-        out |= {("inAppPurchaseVersions", v["id"]) for v in
-                client.get_all(f"/v2/inAppPurchases/{iap['id']}/inAppPurchaseVersions", {"limit": 50})}
+        out |= {("inAppPurchaseVersions", v["id"]) for v in iap_versions(client, iap["id"]) or []}
     except ASCError as e:
         if e.status != 404:
             raise
@@ -2754,8 +2959,8 @@ def iap_review_items(client, kit, app_id, pids, first):
             if attrs(v).get("state") == "MISSING_METADATA":
                 raise SyncError(f"{pid}: its version is MISSING_METADATA: add what App Store Connect asks for first")
             out.append(("inAppPurchaseVersion", "inAppPurchaseVersions", v["id"], f"in-app purchase {name}"))
-        elif L.get("image_kind") == "v1" and attrs(iap).get("state") in IAP_EDITABLE - {"MISSING_METADATA"}:
-            # An unversioned purchase (live 2026-10-14) is named by the purchase itself. UNCONFIRMED that a
+        elif not L.get("versioned", True) and attrs(iap).get("state") in IAP_EDITABLE - {"MISSING_METADATA"}:
+            # An unversioned purchase (no `versions` to list) is named by the purchase itself. UNCONFIRMED that a
             # reviewSubmissionItem takes inAppPurchaseV2 for it.
             out.append(("inAppPurchaseV2", "inAppPurchases", iap["id"], f"in-app purchase {name}"))
         else:
@@ -3044,6 +3249,9 @@ def main(argv=None, client=None):
     ap.add_argument("--growth", help="submit: comma list of growth.yaml ids (custom product pages, tests, events)")
     ap.add_argument("--iap", help="submit: comma list of in-app purchase product ids to send to App Review (not the "
                                   "app's first purchase)")
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="apply: re-send only the items an earlier apply of this same plan marked failed (still needs "
+                         "--yes or --dry-run)")
     ap.add_argument("--reupload-unverified", action="store_true",
                     help="plan: replace live files that match the kit's only by size (no recorded checksum)")
     ap.add_argument("--start-test", help="release: start this approved product page optimization test (growth id)")

@@ -32,6 +32,15 @@ CHILD = {"items": "reviewSubmissionItems",
     "appStoreVersionExperimentTreatmentLocalizations": "appStoreVersionExperimentTreatmentLocalizations",
     "appEvents": "appEvents", "localizations": "appEventLocalizations",
 }
+# Child segments whose type depends on the parent's type (Apple reuses the name).
+CHILD_OF = {("inAppPurchases", "versions"): "inAppPurchaseVersions",
+            ("inAppPurchaseVersions", "localizations"): "inAppPurchaseLocalizations"}
+# Child segments Apple doesn't have (asc-api.md, live findings): 404 "The relationship ... does not exist".
+NO_CHILD = {("inAppPurchases", "inAppPurchaseVersions"), ("inAppPurchaseVersions", "inAppPurchaseLocalizations")}
+# Resources Apple serves no GET on by id (only through a parent): the live answer was 403.
+NO_GET_INSTANCE = {"ageRatingDeclarations"}
+# In-app purchase version states that hold the purchase's one in-flight version (a second one is a 409).
+IAP_FINAL = {"ACCEPTED", "APPROVED", "REPLACED_WITH_NEW_VERSION", "REJECTED", "DEVELOPER_REJECTED"}
 # Relationship names a placement can hang on (exactly one per placement).
 PLACEMENT_PARENTS = ("appStoreVersionLocalization", "appCustomProductPageLocalization",
                      "appStoreVersionExperimentTreatmentLocalization", "appEventLocalization")
@@ -41,6 +50,8 @@ UPLOADABLE = {"appAssetLibraryImages", "appAssetLibraryVideos", "inAppPurchaseIm
               "inAppPurchaseAppStoreReviewScreenshots"}
 # Path roots served under /v2 (asc-api.md §6 and growth-marketing.md); every other root is /v1.
 V2_ROOTS = {"inAppPurchases", "inAppPurchaseLocalizations", "inAppPurchaseImages", "appStoreVersionExperiments"}
+# Roots served under both: the deprecated v1 in-app purchase localizations (on the purchase) and the v2 ones.
+BOTH_ROOTS = {"inAppPurchaseLocalizations"}
 # Path roots whose ids are another type's ids (Apple: a purchase's price schedule id is the purchase id).
 ID_ALIAS = {"inAppPurchasePriceSchedules": "inAppPurchases"}
 DATA_KEYS = {"type", "id", "attributes", "relationships"}
@@ -50,7 +61,7 @@ def check_version(path):
     segs = [p for p in path.split("/") if p]
     assert len(segs) >= 2 and segs[0] in ("v1", "v2"), f"{path}: no /v1 or /v2 prefix"
     want = "v2" if segs[1] in V2_ROOTS else "v1"
-    assert segs[0] == want, f"{path}: {segs[1]} lives under /{want}, not /{segs[0]}"
+    assert segs[0] == want or segs[1] in BOTH_ROOTS, f"{path}: {segs[1]} lives under /{want}, not /{segs[0]}"
 
 
 def check_resource(d, where, typ=None, need_id=False):
@@ -95,6 +106,9 @@ class FakeASC:
                  "platform": "IPHONE_APP_STORE", "displayClassId": "IPHONE_DYNAMIC_ISLAND_MEDIUM_DISPLAY"},
                 {"placementProfileGroupId": "IPAD_13_PROFILE", "platform": "IPAD_APP_STORE",
                  "displayClassId": "IPAD_13_DISPLAY"},
+                # watch: the group id is UNCONFIRMED (asc-api.md §4a); the platform and class are Apple's enums
+                {"placementProfileGroupId": "WATCH_SERIES_10_PROFILE", "platform": "WATCH_APP_STORE",
+                 "displayClassId": "WATCH_SERIES_10"},
                 {"placementProfileGroupId": "DEFAULT_PROFILE", "platform": "ANY", "displayClassId": "DEFAULT"}],
             "placementTypes": [
                 {"placementTypeId": "PRODUCT_PAGE_HEADER_ASSET", "acceptsAssetCategories": ["CREATIVE_ASSETS"],
@@ -140,6 +154,14 @@ class FakeASC:
             return self._err(status, code)
         parts = [p for p in u.path.split("/") if p][1:]  # the version was checked above
         self._check_body(method, parts, js, u.path)
+        if method == "GET" and len(parts) == 2 and parts[0] in NO_GET_INSTANCE:
+            return self._err(403, "FORBIDDEN_ERROR")
+        if method == "GET" and len(parts) == 3 and parts[1] in self.store and \
+                (self.store[parts[1]]["type"], parts[2]) in NO_CHILD:
+            return self._err(404, "NOT_FOUND")
+        conflict = self._conflict(method, parts, js, u.path)
+        if conflict:
+            return self._err(409, conflict)
         try:
             if method == "GET":
                 doc = self._get(parts, q)
@@ -197,6 +219,29 @@ class FakeASC:
             if parts[1] in self.store:
                 assert self.store[parts[1]]["type"] == parts[0], f"PATCH {path}: the id is another type"
 
+    def _conflict(self, method, parts, js, path):
+        """The 409s Apple gives for a second in-flight purchase version or a locale that is already there."""
+        if method != "POST" or len(parts) != 1:
+            return None
+        d = js["data"]
+        rels = {k: (v.get("data") or {}).get("id") for k, v in (d.get("relationships") or {}).items()
+                if isinstance(v.get("data"), dict)}
+        if d["type"] == "inAppPurchaseVersions":
+            iap = rels.get("inAppPurchase")
+            if any(v["attributes"].get("state") not in IAP_FINAL for v in self.of_type("inAppPurchaseVersions")
+                   if (v["relationships"].get("inAppPurchase") or {}).get("data", {}).get("id") == iap):
+                return "STATE_ERROR"
+        if d["type"] in ("inAppPurchaseLocalizations", "inAppPurchaseImages") and path.startswith("/v2/"):
+            assert set(rels) == {"version"}, \
+                f"POST {path}: relates to the version as `version` only, not {sorted(rels)}"
+        if d["type"] == "inAppPurchaseLocalizations":
+            loc = (d.get("attributes") or {}).get("locale")
+            if any(r["attributes"].get("locale") == loc and any(
+                    (v.get("data") or {}).get("id") in rels.values() for v in r["relationships"].values()
+                    if isinstance(v.get("data"), dict)) for r in self.of_type(d["type"])):
+                return "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE"
+        return None
+
     def _err(self, status, code):
         return status, {}, json.dumps({"errors": [{"status": str(status), "code": code, "title": "fake error",
                                                    "detail": f"{code} from the fake"}]}).encode()
@@ -214,7 +259,7 @@ class FakeASC:
             ids = self.app_keywords.get(q.get("filter[locale]"), []) if parent["type"] == "apps" \
                 else parent.get("keywords", [])
             return {"data": [{"type": "appKeywords", "id": k} for k in ids], "links": {}}
-        typ = CHILD[seg]
+        typ = CHILD_OF.get((parent["type"], seg)) or CHILD[seg]
         if seg in TO_ONE:
             fwd = (parent["relationships"].get(seg) or {}).get("data")
             if fwd:

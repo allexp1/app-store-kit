@@ -252,3 +252,39 @@ def test_event_video_duration_and_size(tmp_path, monkeypatch, seconds, size, bad
     rep = vk.Report()
     vk.check_event_video(path, vk.EVENT_MEDIA['card'], rep, 'event')
     assert bool(rep.errors) is bad
+
+
+def test_creative_source_folder_is_skipped_not_read_as_a_locale(tmp_path, capsys):
+    kit = kit_with(tmp_path, {("en-US", "iphone-di-medium"): (IPHONE, 3), ("en-US", "ipad-13"): (IPAD, 3)})
+    png(kit / "creative/en-US/universal.png", (5244, 2950))
+    (kit / "creative/src").mkdir()
+    (kit / "creative/src/universal.html").write_text("<div class=frame></div>")
+    (kit / "creative/src/sun.svg").write_text("<svg/>")
+    assert run([kit, "--platforms", "iphone,ipad", "--today", "2026-10-14"]) == 0
+    out = capsys.readouterr().out
+    assert "not a readable image" not in out and "'src' is not an App Store locale code; skipped" in out
+
+
+def test_facts_platforms_watch_requires_watch_screenshots(tmp_path, capsys):
+    kit = kit_with(tmp_path, {("en-US", "iphone-di-medium"): (IPHONE, 3)})
+    (kit / "facts.yaml").write_text(yaml.safe_dump({"platforms": ["iphone", "watch"]}))
+    assert run([kit, "--today", "2026-10-14"]) == 1
+    assert "required set missing: watch" in capsys.readouterr().out
+    for i in range(5):
+        png(kit / f"screenshots/en-US/watch/{i:02d}.png", (416, 496))
+    assert run([kit, "--today", "2026-10-14"]) == 0
+
+
+def test_watch_app_detected_in_ipa_and_archive(tmp_path):
+    import zipfile
+    ipa = tmp_path / "App.ipa"
+    with zipfile.ZipFile(ipa, "w") as z:
+        z.writestr("Payload/App.app/Watch/AppWatch.app/Info.plist", "x")
+    assert "AppWatch.app" in vk.detect_watch(ipa)
+    arch = tmp_path / "A.xcarchive/Products/Applications/App.app/Watch/W.app"
+    arch.mkdir(parents=True)
+    assert "embedded watch app" in vk.detect_watch(tmp_path / "A.xcarchive")
+    plain = tmp_path / "plain"
+    (plain / "P.xcodeproj").mkdir(parents=True)
+    (plain / "P.xcodeproj/project.pbxproj").write_text("IPHONEOS_DEPLOYMENT_TARGET = 17.0;")
+    assert vk.detect_watch(plain) is None

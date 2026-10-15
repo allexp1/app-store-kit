@@ -10,7 +10,10 @@ body{margin:0}
 .half{position:absolute;top:0;bottom:0;width:50%}
 .l{left:0;background:{{LEFT_BG}}}.r{right:0;background:{{RIGHT_BG}}}
 .card{position:absolute;width:640px;height:853px;border-radius:56px;border:18px solid {{PAPER}};
-  background:#ddd center/cover;box-shadow:0 40px 90px rgba(0,0,0,.28)}
+  background:#ddd;overflow:hidden;box-shadow:0 40px 90px rgba(0,0,0,.28)}
+/* A phone capture's useful part is the top. Override per card where it sits lower, e.g. a ringing screen:
+   <img style="object-position:center 62%" ...> */
+.card img{display:block;width:100%;height:100%;object-fit:cover;object-position:top}
 .badge{position:absolute;width:190px;height:190px;border-radius:50%;display:grid;place-items:center;
   border:14px solid {{PAPER}};box-shadow:0 20px 50px rgba(0,0,0,.25)}
 .badge img{width:96px;height:96px}
@@ -22,13 +25,13 @@ body{margin:0}
 </style></head><body>
 <div class="frame">
   <div class="half l"></div><div class="half r"></div>
-  <div class="card" style="left:300px;top:760px;transform:rotate(-16deg);background-image:url('{{LEFT_1}}')"></div>
-  <div class="card" style="left:860px;top:1180px;transform:rotate(-9deg);background-image:url('{{LEFT_2}}')"></div>
-  <div class="card" style="left:1330px;top:560px;transform:rotate(-5deg);background-image:url('{{LEFT_3}}')"></div>
+  <div class="card" style="left:300px;top:760px;transform:rotate(-16deg)"><img alt="" src="{{LEFT_1}}"></div>
+  <div class="card" style="left:860px;top:1180px;transform:rotate(-9deg)"><img alt="" src="{{LEFT_2}}"></div>
+  <div class="card" style="left:1330px;top:560px;transform:rotate(-5deg)"><img alt="" src="{{LEFT_3}}"></div>
   <div class="badge lb" style="left:1700px;top:470px"><img alt="" src="{{LEFT_ICON}}"></div>
-  <div class="card" style="left:3274px;top:560px;transform:rotate(5deg);background-image:url('{{RIGHT_1}}')"></div>
-  <div class="card" style="left:3744px;top:1180px;transform:rotate(9deg);background-image:url('{{RIGHT_2}}')"></div>
-  <div class="card" style="left:4304px;top:760px;transform:rotate(16deg);background-image:url('{{RIGHT_3}}')"></div>
+  <div class="card" style="left:3274px;top:560px;transform:rotate(5deg)"><img alt="" src="{{RIGHT_1}}"></div>
+  <div class="card" style="left:3744px;top:1180px;transform:rotate(9deg)"><img alt="" src="{{RIGHT_2}}"></div>
+  <div class="card" style="left:4304px;top:760px;transform:rotate(16deg)"><img alt="" src="{{RIGHT_3}}"></div>
   <div class="badge rb" style="left:3354px;top:470px"><img alt="" src="{{RIGHT_ICON}}"></div>
   <div class="phone"><img alt="" src="{{SCREEN}}"></div>
 </div>

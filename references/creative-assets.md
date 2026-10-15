@@ -73,7 +73,12 @@ relate to what the app does.
    cards around it). Change the story to fit the app; only the frame class and the size are fixed.
 2. Render: `render_creative.py templates/creative-universal.html --out KIT/creative/en-US/universal.png
    --guides /tmp/guides.jpg --set SCREEN=captures/... --set LEFT_BG=#... ...` (placeholders `{{NAME}}` are
-   filled with files as data URIs, or with plain values).
+   filled with files as data URIs, or with plain values). It stops on a `--set` name the HTML doesn't use, a
+   placeholder with no value, or any `{{...}}` left after filling. The cards are `<img>` with
+   `object-fit: cover; object-position: top` (a phone capture's useful part is the top); give one card
+   `style="object-position: center 62%"` when its content sits lower, such as a ringing screen.
+   Keep the asset's own sources (a copied template, SVG, art) in `KIT/creative-src/`, not under `KIT/creative/`:
+   every folder there is read as a locale (`validate_kit.py` skips and warns about one that isn't a locale code).
 3. Look at the guides preview, then show the owner the asset itself.
 4. `validate_kit.py KIT`, then `asc_sync.py plan KIT --only media`: the plan lists "Header asset" and
    "Search results asset" per locale.

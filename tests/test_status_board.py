@@ -58,3 +58,50 @@ def test_main_writes_status_md_and_never_reads_private(tmp_path):
     text = (kit / "STATUS.md").read_text()
     assert "555 0100" not in text and "s3cret" not in text
     assert sb.main([str(tmp_path / "nope")]) == 2
+
+
+def _platforms(kit, fams):
+    facts = yaml.safe_load((kit / "facts.yaml").read_text()) or {}
+    facts["platforms"] = fams
+    (kit / "facts.yaml").write_text(yaml.safe_dump(facts))
+
+
+def _shots(kit, loc, slot, size, n):
+    from PIL import Image
+    d = kit / "screenshots" / loc / slot
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        Image.new("RGB", size, (200, 200, 200)).save(d / f"{i + 1:02d}.png")
+
+
+def test_watch_screenshots_missing_is_red_until_present(tmp_path):
+    kit = make_kit(tmp_path)
+    _platforms(kit, ["iphone", "watch"])
+    _shots(kit, "en-US", "iphone-di-medium", (1206, 2622), 3)
+    md = sb.render(kit)
+    assert "🔴 Apple Watch screenshots missing" in md and "en-US" in md
+    _shots(kit, "en-US", "watch", (416, 496), 5)
+    md = sb.render(kit)
+    assert "🔴" not in md and "✅ Apple Watch screenshots in every locale." in md
+
+
+def test_watch_detected_from_project(tmp_path):
+    (tmp_path / "kit").mkdir()
+    kit = make_kit(tmp_path / "kit")
+    proj = tmp_path / "App" / "App.xcodeproj"
+    proj.mkdir(parents=True)
+    (proj / "project.pbxproj").write_text("buildSettings = { WATCHOS_DEPLOYMENT_TARGET = 11.0; };")
+    md = sb.render(kit, tmp_path / "App")
+    assert "🔴 Apple Watch screenshots missing" in md and "WATCHOS_DEPLOYMENT_TARGET" in md
+
+
+def test_header_asset_is_an_open_item_not_a_blocker(tmp_path):
+    kit = make_kit(tmp_path)
+    md = sb.render(kit)
+    line = next(l for l in md.splitlines() if "Header and search-results asset" in l)
+    assert line.startswith("- ⬜") and "Ask the owner" in line
+    assert "fix the" not in next(l for l in md.splitlines() if l.startswith("**Next:**"))
+    from PIL import Image
+    (kit / "creative/en-US").mkdir(parents=True)
+    Image.new("RGB", (5244, 2950)).save(kit / "creative/en-US/universal.png")
+    assert "✅ Header and search-results asset: 1 file(s)" in sb.render(kit)

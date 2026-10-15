@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 import tempfile
 
@@ -22,6 +23,8 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import render  # noqa: E402
+
+LEFTOVER = re.compile(r"\{\{[^{}]*\}\}")
 
 # Frame size and "Art Safe Area" (x0, y0, x1, y1), read from Apple's creative assets Figma template
 # (developer.apple.com/go/?id=figma-creative-assets-templates, file dated 2026-08-05).
@@ -79,7 +82,23 @@ def main(argv=None):
     ap.add_argument("--renderer", default="auto", choices=["auto", "playwright", "chrome"])
     a = ap.parse_args(argv)
     (w, h), _ = FRAMES[a.kind]
-    src = render.fill(pathlib.Path(a.html).read_text(), values(a.set))
+    html = pathlib.Path(a.html).read_text()
+    vals = values(a.set)
+    names = set(render.PLACE.findall(html))
+    unknown = sorted(set(vals) - names)
+    if unknown:
+        print(f"error: --set {', '.join(unknown)} matches no {{{{NAME}}}} in {a.html} "
+              f"(placeholders: {', '.join(sorted(names)) or 'none'})", file=sys.stderr)
+        return 2
+    missing = sorted(names - set(vals))
+    if missing:
+        print(f"error: no --set value for {', '.join(missing)}", file=sys.stderr)
+        return 2
+    src = render.fill(html, vals)
+    left = sorted(set(LEFTOVER.findall(src)))
+    if left:                                  # a name the placeholder pattern cannot match, e.g. {{left-1}}
+        print(f"error: unfilled placeholders after substitution: {', '.join(left)}", file=sys.stderr)
+        return 2
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:

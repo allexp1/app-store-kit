@@ -288,14 +288,17 @@ class Project:
         if not projs:
             return None
         text = projs[0].read_text(errors="ignore")
-        configs = []
+        configs, names = [], []
         for m in re.finditer(r"buildSettings = \{(.*?)\n\t\t\t\};", text, re.S):
             settings = {}
             for k, v in re.findall(r"^\s*\"?([A-Za-z0-9_\[\]=*\"~ -]+?)\"? = (.*?);\s*$", m.group(1), re.M):
                 settings[k.strip()] = v.strip().strip('"')
             configs.append(settings)
+            # XCBuildConfiguration writes `name = Release;` right after its buildSettings block
+            name = re.match(r"\s*name = \"?([^\";]+)\"?;", text[m.end():])
+            names.append(name.group(1) if name else "")
         upgrade = re.search(r"LastUpgradeCheck = (\d+);", text)
-        return {"path": projs[0], "text": text, "configs": configs,
+        return {"path": projs[0], "text": text, "configs": configs, "config_names": names,
                 "last_upgrade": upgrade.group(1) if upgrade else None}
 
     def _discover_targets(self):
@@ -382,6 +385,44 @@ class Project:
                 continue
             best.update(c)
         return best
+
+    def _pbx_setting(self, key):
+        """A build setting from the pbxproj, Release config first: the app target's, then project-level."""
+        if not self.pbx:
+            return ""
+        bid = self.settings.get("PRODUCT_BUNDLE_IDENTIFIER", "")
+        ranked = []
+        for c, name in zip(self.pbx["configs"], self.pbx.get("config_names", [])):
+            v = c.get(key, "").strip()
+            cbid = c.get("PRODUCT_BUNDLE_IDENTIFIER", "")
+            if not v or (cbid and cbid != bid):
+                continue  # other targets (tests, extensions) carry their own values
+            ranked.append(((0 if cbid else 2) + (0 if name == "Release" else 1), v))
+        return min(ranked)[1] if ranked else ""
+
+    def info_value(self, key, setting):
+        """(value, where) of an Info.plist key as the built app gets it. With GENERATE_INFOPLIST_FILE the
+        key is often absent from the source plist, or a $(SETTING) reference: fall back to
+        INFOPLIST_KEY_<key>, then the build setting (pbxproj Release config first)."""
+        v = str(self.info.get(key, "") or "").strip()
+        where = self.info_where.get(key, "Info.plist")
+        for _ in range(3):  # follow $(A) -> $(B) a few levels
+            ref = re.fullmatch(r"\$[({](\w+)(?::[^)}]*)?[)}]", v)
+            if v and not ref:
+                return v, where
+            name = ref.group(1) if ref else setting
+            if not ref and self.settings.get(f"INFOPLIST_KEY_{key}", "").strip():
+                v, where = self.settings[f"INFOPLIST_KEY_{key}"].strip(), f"build setting INFOPLIST_KEY_{key}"
+                continue
+            merged = self.settings.get(name, "").strip()  # XcodeGen: already the Release config
+            v = (merged or self._pbx_setting(name)) if self.yml else (self._pbx_setting(name) or merged)
+            where = f"build setting {name}"
+            if not v:
+                # an xcconfig the pbxproj points at may define it; unknown is not empty
+                if ref and self.pbx and "baseConfigurationReference" in self.pbx["text"]:
+                    return ref.group(0), f"{where} (xcconfig, not read)"
+                return "", where
+        return v, where
 
     def _targets_from_pbx(self):
         self.settings = self._pbx_app_settings()
@@ -1141,10 +1182,11 @@ def chk_bundle_id(p, r, opt):
                "Use your own reverse-DNS bundle ID.", severity="BLOCKER")
     elif bid:
         r.ok("UP-18", f"Bundle identifier {bid}.")
-    ver = str(p.info.get("CFBundleShortVersionString", ""))
-    if not ver.strip():
-        r.fail("UP-18", "CFBundleShortVersionString is empty.", ["Info.plist"], "Set MARKETING_VERSION.",
-               severity="BLOCKER")
+    # resolved like the build does: plist value, $(MARKETING_VERSION) reference, INFOPLIST_KEY_, build setting
+    ver, ver_where = p.info_value("CFBundleShortVersionString", "MARKETING_VERSION")
+    if not ver:
+        r.fail("UP-18", "CFBundleShortVersionString is empty (no plist value, INFOPLIST_KEY_ or MARKETING_VERSION).",
+               ["Info.plist", ver_where], "Set MARKETING_VERSION.", severity="BLOCKER")
     name = str(p.info.get("CFBundleDisplayName", "") or "")
     if len(name) > 30:
         r.fail("UP-18", f"CFBundleDisplayName is {len(name)} characters (over 30).",
@@ -1154,9 +1196,10 @@ def chk_bundle_id(p, r, opt):
         r.fail("UP-18", f"Display name '{name}' looks like a template name.", [p.info_where.get("CFBundleDisplayName", "")],
                "Use the real app name.", severity="LIKELY REJECTION")
     kit_build = str((p.facts.get("app") or {}).get("build", "") or "")
-    proj_build = p.settings.get("CURRENT_PROJECT_VERSION", "")
+    proj_build, build_where = p.info_value("CFBundleVersion", "CURRENT_PROJECT_VERSION")
     if kit_build and proj_build and kit_build != proj_build:
-        r.fail("UP-18", f"Kit facts say build {kit_build} but the project has CURRENT_PROJECT_VERSION {proj_build}.",
+        r.fail("UP-18", f"Kit facts say build {kit_build} but the project has CFBundleVersion {proj_build} "
+                        f"({build_where}).",
                ["facts.yaml app.build"], "Update facts.yaml; each upload needs a new, higher build number.",
                severity="WARNING")
 

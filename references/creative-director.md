@@ -207,12 +207,21 @@ left-to-right layout and only right-aligns the text.
   thin phones (4 slices, not 22), and no filters, blend modes or 3D context (`perspective`, `preserve-3d`). Each of
   those gets its own compositing layer, and a canvas of several 3D-phone boards loads, then goes blank about 20 s
   later. If a canvas goes blank after loading, look for these first. Then, from the session:
+  0. check that the account has the Design type: Artifact `action: "list"`, `scope: "types"` (or a quickstart with
+     `intent: "design"`). Artifact types are per account, and some sessions' Artifact tool has no `type_url` at all.
+     If no Design type is listed, there is no canvas: use the **review page** below instead, and tell the owner the
+     editable canvas needs the Design type on their account;
   1. create the canvas: Artifact publish with the Design type's `type_url`, a `title`, `auto_open: "after_first_write"`;
   2. upload every file in `assets.json` to it (`asset: true`, `file_paths`) and write `DIR/asset-urls.json` as
      `{"__ASSET_001__": "/_blob/<id>", ...}` (token order = `assets.json` order);
   3. `campaign.py canvas-link DIR`;
   4. publish `project/canvas.json` + `project/Main.dc.html` (`root: DIR`), then the panel artboards in one more call.
   The canvas is for review and hand edits. The App Store files still come from `render`.
+- **Review page** (no Design type, or the owner only wants to look): after `render` (and `concepts`),
+  `campaign.py review-page OUT [--locale L] [--slot S] [--file F]` writes one self-contained `OUT/review.html`:
+  the presentation, every panel of that locale and slot, the concepts contact sheet and `report.md`, as embedded
+  JPEGs sized to stay under 16 MB. Publish it as a plain Artifact page. It is read-only: changes go back through
+  `campaign.yaml` and `render`.
 - **Figma**: open `source/scene.html` in a browser and use `html_to_figma` (see `references/figma.md`), or rebuild
   from `layout.yaml`. Export at scale 1 and run `validate_kit.py`.
 

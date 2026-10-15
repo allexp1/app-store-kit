@@ -2,6 +2,7 @@
 rows) that a feature-explosion layout may lift out. Measurements only; meaning comes from reading the app."""
 from __future__ import annotations
 
+import colorsys
 import pathlib
 
 from PIL import Image, ImageFilter, ImageStat
@@ -69,16 +70,93 @@ def describe(path: pathlib.Path):
                 "palette": palette(rgb), "blocks": ui_blocks(rgb)}
 
 
-def suggest_palette(screens: list[dict], icon: dict | None):
-    """A starting palette from the icon (brand) and the screens (UI). The art director refines it."""
+def _rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _mix(a, b, t):
+    """a moved a fraction t of the way to b (both "#RRGGBB")."""
+    return hexc([x + (y - x) * t for x, y in zip(_rgb(a), _rgb(b))])
+
+
+def _hue(h):
+    r, g, b = (v / 255 for v in _rgb(h))
+    return colorsys.rgb_to_hls(r, g, b)[0] * 360
+
+
+def _hue_gap(a, b):
+    d = abs(_hue(a) - _hue(b)) % 360
+    return min(d, 360 - d)
+
+
+def _lum(h):
+    def ch(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (ch(v) for v in _rgb(h))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a, b):
+    la, lb = sorted((_lum(a), _lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+FALLBACK = {"light": {"bg": "#F4F1EA", "bg2": "#E7E1D5", "ink": "#15140F", "muted": "#6B665C"},
+            "dark": {"bg": "#0F1115", "bg2": "#1B1F27", "ink": "#F4F2EC", "muted": "#8B93A1"}}
+
+
+def suggest_palette(screens: list[dict], icon: dict | None, sources: dict | None = None):
+    """A starting palette from the icon (brand) and the screens (UI). The art director refines it.
+
+    bg/bg2 are tints of the brand hue: the app's own most-shared pale (or deep) colour within 20° of the accent,
+    else the accent mixed toward white (light apps) or black (dark apps). ink is the accent pushed toward black
+    (white) until it reaches 7:1 on bg. The fixed cream / charcoal is only the fallback when no colour in the
+    icon or screens reaches chroma 60. `sources`, when given, is filled with where each colour came from."""
+    sources = {} if sources is None else sources
     src = (icon or {}).get("palette") or []
     vivid = sorted([c for c in src if c["chroma"] > 60], key=lambda c: -c["share"])
+    origin = "icon"
     if not vivid:
         allc = [c for s in screens for c in s["palette"] if c["chroma"] > 60]
         vivid = sorted(allc, key=lambda c: -c["share"])
-    accent = vivid[0]["hex"] if vivid else "#FF5A36"
-    accent2 = vivid[1]["hex"] if len(vivid) > 1 else "#2D5BFF"
+        origin = "screens"
     dark = sum(1 for s in screens if s["appearance"] == "dark") > len(screens) / 2
-    return {"bg": "#0F1115" if dark else "#F4F1EA", "bg2": "#1B1F27" if dark else "#E7E1D5",
-            "ink": "#F4F2EC" if dark else "#15140F", "muted": "#8B93A1" if dark else "#6B665C",
-            "accent": accent, "accent2": accent2, "dark": "#0E0F12", "light": "#FFFFFF"}
+    mode = "dark" if dark else "light"
+    if not vivid:
+        sources.update({k: f"fallback {mode} neutral (no colour reaches chroma 60)"
+                        for k in ("bg", "bg2", "ink", "muted", "accent", "accent2")})
+        return {**FALLBACK[mode], "accent": "#FF5A36", "accent2": "#2D5BFF", "dark": "#0E0F12", "light": "#FFFFFF"}
+    accent = vivid[0]["hex"]
+    accent2 = next((c["hex"] for c in vivid[1:] if _hue_gap(c["hex"], accent) > 25), None)
+    sources["accent"] = f"most-shared vivid colour of the {origin}"
+    sources["accent2"] = (f"next vivid colour of the {origin} with another hue" if accent2
+                          else "accent mixed 35% toward black (no second hue in the app)")
+    accent2 = accent2 or _mix(accent, "#000000", 0.35)
+    target = "#000000" if dark else "#FFFFFF"
+    pale = [c for s in screens + ([icon] if icon else []) for c in s["palette"]
+            if c["chroma"] <= 40 and c["chroma"] >= 4 and _hue_gap(c["hex"], accent) <= 20
+            and ((_lum(c["hex"]) < 0.05) if dark else (_lum(c["hex"]) > 0.6))]
+    if pale:
+        best = max(pale, key=lambda c: c["share"])
+        bg = best["hex"]
+        bg2 = _mix(bg, accent, 0.10)
+        sources["bg"] = "the app's most-shared low-chroma tint of the accent hue"
+        sources["bg2"] = "bg moved 10% toward the accent"
+    else:
+        bg = _mix(accent, target, 0.86 if dark else 0.90)
+        bg2 = _mix(accent, target, 0.76 if dark else 0.80)
+        sources["bg"] = f"accent mixed {'86% toward black' if dark else '90% toward white'}"
+        sources["bg2"] = f"accent mixed {'76% toward black' if dark else '80% toward white'}"
+    away = "#FFFFFF" if dark else "#000000"
+    t = 0.75
+    ink = _mix(accent, away, t)
+    while contrast(ink, bg) < 7 and t < 1:
+        t = min(1.0, t + 0.03)
+        ink = _mix(accent, away, t)
+    sources["ink"] = f"accent mixed {round(t * 100)}% toward {'white' if dark else 'black'} ({contrast(ink, bg):.1f}:1 on bg)"
+    muted = _mix(ink, bg, 0.42)
+    sources["muted"] = "ink mixed 42% toward bg"
+    return {"bg": bg, "bg2": bg2, "ink": ink, "muted": muted, "accent": accent, "accent2": accent2,
+            "dark": "#0E0F12", "light": "#FFFFFF"}

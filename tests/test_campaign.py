@@ -560,3 +560,94 @@ def test_screenshot_loading(tmp_path):
     (tmp_path / "screens" / "s2.png").unlink()
     with pytest.raises(FileNotFoundError):
         ctx.shot("s2")
+
+
+# --- palette suggestion (campaign.py init / analyze) ---------------------------------------------------------
+
+def _indigo_screens(tmp_path):
+    from studio import analyze
+    out = []
+    for i, (top, card) in enumerate([("#4F47C2", "#ECEBFA"), ("#1F1B5E", "#E9E8F8"), ("#5B57D9", "#EEEDFB")]):
+        im = Image.new("RGB", (300, 650), card)
+        Image.Image.paste(im, Image.new("RGB", (300, 260), top), (0, 0))
+        Image.Image.paste(im, Image.new("RGB", (240, 90), top), (30, 420))
+        f = tmp_path / f"s{i}.png"
+        im.save(f)
+        out.append(analyze.describe(f))
+    return out
+
+
+def test_palette_follows_the_brand_hue(tmp_path):
+    from studio import analyze
+    shots = _indigo_screens(tmp_path)
+    src = {}
+    pal = analyze.suggest_palette(shots, None, src)
+    assert pal["bg"] != "#F4F1EA" and pal["bg2"] != "#E7E1D5"
+    assert analyze._hue_gap(pal["bg"], pal["accent"]) <= 20, pal
+    assert analyze.contrast(pal["ink"], pal["bg"]) >= 7
+    assert {"bg", "bg2", "ink", "accent"} <= set(src) and "fallback" not in src["bg"]
+
+
+def test_palette_from_accent_mix_when_no_pale_tint(tmp_path):
+    from studio import analyze
+    im = Image.new("RGB", (300, 650), "#FFFFFF")
+    im.paste(Image.new("RGB", (300, 300), "#4F47C2"), (0, 0))
+    im.save(tmp_path / "a.png")
+    pal = analyze.suggest_palette([analyze.describe(tmp_path / "a.png")], None)
+    assert analyze._hue_gap(pal["bg"], "#4F47C2") <= 20 and analyze.contrast(pal["ink"], pal["bg"]) >= 7
+
+
+def test_palette_dark_app_and_greyscale_fallback(tmp_path):
+    from studio import analyze
+    im = Image.new("RGB", (300, 650), "#101018")
+    im.paste(Image.new("RGB", (300, 200), "#5B57D9"), (0, 300))
+    im.save(tmp_path / "d.png")
+    pal = analyze.suggest_palette([analyze.describe(tmp_path / "d.png")], None)
+    assert analyze._lum(pal["bg"]) < 0.05 and analyze.contrast(pal["ink"], pal["bg"]) >= 7
+    for i, c in enumerate(("#F2F2F2", "#DDDDDD")):
+        g = Image.new("RGB", (300, 650), c)
+        g.paste(Image.new("RGB", (300, 100), "#333333"), (0, 0))
+        g.save(tmp_path / f"g{i}.png")
+    grey = [analyze.describe(tmp_path / f"g{i}.png") for i in range(2)]
+    src = {}
+    pal = analyze.suggest_palette(grey, None, src)
+    assert pal["bg"] == "#F4F1EA" and "fallback" in src["bg"] and analyze.contrast(pal["ink"], pal["bg"]) >= 7
+
+
+# --- review page (the fallback when the Design canvas type is not on the account) ----------------------------
+
+def _fake_render(out, locs=("en-US", "he"), n=3):
+    for loc in locs:
+        d = out / loc / "tiny"
+        (d / "panels").mkdir(parents=True)
+        for i in range(n):
+            Image.new("RGB", (240, 520), (40 * i, 90, 160)).save(d / "panels" / f"{i + 1:02d}-p{i + 1}.png")
+        Image.new("RGB", (900, 600), (200, 200, 190)).save(d / "presentation.png")
+        (d / "report.md").write_text("# QA\n\nPASS <seams>\n")
+    (out / "concepts").mkdir()
+    Image.new("RGB", (1200, 800), (20, 20, 20)).save(out / "concepts" / "contact-sheet.png")
+
+
+def test_review_page_embeds_every_panel_of_the_chosen_locale(tmp_path):
+    out = tmp_path / "out"
+    _fake_render(out)
+    r = _run("review-page", out, "--locale", "he", "--slot", "tiny")
+    assert r.returncode == 0, r.stdout + r.stderr
+    page = (out / "review.html").read_text()
+    assert len(page.encode()) < 16 * 1024 * 1024
+    assert page.count('<figure class=""><img alt="" src="data:image/jpeg;base64,') == 3
+    assert "Presentation" in page and "Creative directions" in page and "&lt;seams&gt;" in page
+    assert "he · tiny" in page and "prefers-color-scheme" in page
+    assert "file://" not in page
+
+
+def test_review_page_without_render_fails_clearly(tmp_path):
+    (tmp_path / "out").mkdir()
+    r = _run("review-page", tmp_path / "out")
+    assert r.returncode != 0 and "campaign.py render" in (r.stdout + r.stderr)
+
+
+def test_reference_names_the_types_check_and_fallback():
+    doc = (SCRIPTS.parent / "references" / "creative-director.md").read_text()
+    assert 'scope: "types"' in doc or "scope=types" in doc
+    assert "review-page" in doc and "Design type" in doc

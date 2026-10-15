@@ -12,9 +12,13 @@ Kit layout (all optional except what you want checked):
   KIT/growth/<event>/media/<locale>/card|details.png|mp4     in-app event card (16:9) and details page (9:16)
 
 Usage:
-  validate_kit.py KIT [--platforms iphone,ipad] [--fix] [--report OUT.md] [--rules R] [--today YYYY-MM-DD]
+  validate_kit.py KIT [--platforms iphone,ipad] [--project DIR|APP.ipa] [--fix] [--report OUT.md] [--rules R]
+                  [--today YYYY-MM-DD]
   validate_kit.py --pairs [--fix] [--rules R] SLOT=FILE ...      (single files, no set checks)
 
+Platforms: --platforms, else facts.yaml `platforms:` plus the slot folders present. A watch app found in --project
+(or facts.yaml `project:`) adds watch either way: a target with WATCHOS_DEPLOYMENT_TARGET, an embedded Watch/
+bundle in a built .app, .xcarchive or .ipa. Apple refuses "Add for Review" without Apple Watch screenshots then.
 --fix strips the alpha channel in place (keeps the ICC profile) and re-checks.
 Apple rules are errors. House rules (rules.json house_rules) are warnings, labelled "house".
 Exit 0 when there are no errors, 1 otherwise.
@@ -161,6 +165,74 @@ def check_image(path, sizes, rules_img, rep, scope, fix=False, label=""):
     if not errs:
         rep.ok(scope, f"{path.name}: {fmt} {img.size[0]}x{img.size[1]} {img.mode} profile={prof}")
     return errs == 0
+
+
+FAMILY_ALIASES = {"ios": "iphone", "iphoneos": "iphone", "ipados": "ipad", "macos": "mac", "tvos": "appletv",
+                  "visionos": "vision", "watchos": "watch", "applewatch": "watch", "apple-watch": "watch"}
+SKIP_SCAN = {"DerivedData", "Pods", "Carthage", "node_modules", ".git", ".build"}
+
+
+def detect_watch(path):
+    """Where the app embeds a watch app: a description of the evidence, or None."""
+    import zipfile
+    path = pathlib.Path(path).expanduser()
+    if path.is_file() and path.suffix.lower() == ".ipa":
+        try:
+            with zipfile.ZipFile(path) as z:
+                hit = next((n for n in z.namelist() if re.search(r"\.app/Watch/[^/]+\.app/", n)), None)
+        except zipfile.BadZipFile:
+            return None
+        return f"{path.name}: {hit.split('/Watch/')[1].split('/')[0]} in Watch/" if hit else None
+    if not path.is_dir():
+        return None
+    stack = [path]
+    while stack:
+        d = stack.pop()
+        try:
+            children = list(d.iterdir())
+        except OSError:
+            continue
+        for c in children:
+            if c.is_dir():
+                if c.name == "Watch" and c.parent.suffix == ".app" and any(c.glob("*.app")):
+                    return f"{c.relative_to(path)}: embedded watch app"
+                if c.name not in SKIP_SCAN:
+                    stack.append(c)
+            elif c.name == "project.pbxproj":
+                if "WATCHOS_DEPLOYMENT_TARGET" in c.read_text(errors="ignore"):
+                    return f"{c.relative_to(path)}: a target sets WATCHOS_DEPLOYMENT_TARGET"
+    return None
+
+
+def kit_families(kit, explicit=None, project=None):
+    """(families, notes): --platforms, else facts.yaml platforms + slot folders; a detected watch app adds watch."""
+    import yaml
+    facts_path = kit / "facts.yaml"
+    facts = (yaml.safe_load(facts_path.read_text()) or {}) if facts_path.exists() else {}
+    facts = facts if isinstance(facts, dict) else {}
+    notes = []
+    if explicit:
+        fams = set(explicit.split(","))
+    else:
+        declared = facts.get("platforms") or []
+        declared = [declared] if isinstance(declared, str) else declared
+        fams = {FAMILY_ALIASES.get(str(x).lower().replace(" ", ""), str(x).lower()) for x in declared}
+        shots = kit / "screenshots"
+        folders = {sd.name.split("-")[0] for loc in (shots.iterdir() if shots.exists() else []) if loc.is_dir()
+                   for sd in loc.iterdir() if sd.is_dir()}
+        fams |= folders
+        notes.append(f"platforms from facts.yaml and folders: {', '.join(sorted(fams)) or 'none'} "
+                     f"(pass --platforms to be explicit)")
+    project = project or facts.get("project")
+    if project and "watch" not in fams:
+        p = pathlib.Path(str(project)).expanduser()
+        if not p.is_absolute():
+            p = kit / p
+        hit = detect_watch(p)
+        if hit:
+            fams.add("watch")
+            notes.append(f"watch app found ({hit}); Apple Watch screenshots are required")
+    return fams, notes
 
 
 def images_in(d):
@@ -331,7 +403,15 @@ def check_creative(kit, rules, rep, fix, root=None, prefix=""):
     if not root.exists():
         return
     cr = rules.get("creative_assets") or CREATIVE_DEFAULT
+    try:
+        import locales
+    except ImportError:  # pragma: no cover
+        sys.path.insert(0, str(HERE)); import locales
     for loc in sorted(p for p in root.iterdir() if p.is_dir()):
+        if loc.name not in locales.LOCALES:
+            rep.warn(f"{prefix}{loc.name}/creative", f"'{loc.name}' is not an App Store locale code; skipped "
+                                                     "(keep the asset's sources in KIT/creative-src/)")
+            continue
         files = [f for f in sorted(loc.iterdir()) if f.is_file() and not f.name.startswith(".")]
         for f in files:
             kind = f.stem.lower()
@@ -568,6 +648,7 @@ def main(argv=None):
     ap.add_argument("--pairs", action="store_true", help="targets are SLOT=FILE pairs")
     ap.add_argument("--rules")
     ap.add_argument("--platforms", help="comma list of families the app ships on (iphone,ipad,mac,appletv,vision,watch)")
+    ap.add_argument("--project", help="Xcode project folder, built .app/.xcarchive or .ipa (watch app detection)")
     ap.add_argument("--fix", action="store_true")
     ap.add_argument("--report")
     ap.add_argument("--today")
@@ -588,13 +669,9 @@ def main(argv=None):
         ap.error("give one KIT directory, or --pairs SLOT=FILE ...")
     kit = pathlib.Path(a.targets[0])
     rules = load_rules(a.rules, kit, rep, today)
-    shots = kit / "screenshots"
-    if a.platforms:
-        families = set(a.platforms.split(","))
-    else:
-        families = {sd.name.split("-")[0] for loc in (shots.iterdir() if shots.exists() else []) if loc.is_dir()
-                    for sd in loc.iterdir() if sd.is_dir()}
-        rep.note("kit", f"platforms inferred from folders: {', '.join(sorted(families)) or 'none'} (pass --platforms to be explicit)")
+    families, notes = kit_families(kit, a.platforms, a.project)
+    for n in notes:
+        rep.note("kit", n)
     missing = {}
     locales = check_screenshots(kit, rules, rep, families, a.fix, today, missing)
     check_previews(kit, rules, rep)

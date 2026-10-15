@@ -51,7 +51,7 @@ Python sketch: `jwt.encode({"iss":ISS,"iat":now,"exp":now+1200,"aud":"appstoreco
 | appInfos | yes | `GET /v1/apps/{id}/appInfos`, `GET/PATCH /v1/appInfos/{id}` | Read-only: `state`, `appStoreAgeRating`, plus the deprecated country ratings. PATCH sets **categories** through relationships: `primaryCategory`, `primarySubcategoryOne/Two`, `secondaryCategory`, `secondarySubcategoryOne/Two`. | https://developer.apple.com/documentation/appstoreconnectapi/app-infos |
 | Categories list | yes (read) | `GET /v1/appCategories` (+ `/{id}/subcategories`) | IDs such as `PHOTO_AND_VIDEO` | https://developer.apple.com/documentation/appstoreconnectapi/app-categories |
 | appInfoLocalizations | yes | `POST /v1/appInfoLocalizations`, `GET/PATCH/DELETE /v1/appInfoLocalizations/{id}`, `GET /v1/appInfos/{id}/appInfoLocalizations` | `locale` (required), **`name` (required on create since 3.7)**, `subtitle`, `privacyPolicyUrl`, `privacyChoicesUrl`, `privacyPolicyText` (tvOS) | https://developer.apple.com/documentation/appstoreconnectapi/appinfolocalizationcreaterequest/data-data.dictionary/attributes-data.dictionary |
-| Age rating | yes | `GET /v1/appInfos/{id}/ageRatingDeclaration`, `PATCH /v1/ageRatingDeclarations/{id}`, `GET /v1/appInfos/{id}/territoryAgeRatings` | See the list below | https://developer.apple.com/documentation/appstoreconnectapi/age-ratings |
+| Age rating | yes | `GET /v1/appInfos/{id}/ageRatingDeclaration`, `PATCH /v1/ageRatingDeclarations/{id}`, `GET /v1/appInfos/{id}/territoryAgeRatings`. **There is no `GET /v1/ageRatingDeclarations/{id}`** in Apple's list: read (and re-read after a PATCH) only through the app info. Live 2026-10-15 it answered 403. A 403 on the age-rating step makes asc_sync a browser step (App Information › Age Rating), not a failure. | See the list below | https://developer.apple.com/documentation/appstoreconnectapi/age-ratings , https://developer.apple.com/documentation/appstoreconnectapi/get-v1-appinfos-_id_-ageratingdeclaration |
 
 **Current `AgeRatingDeclaration` attributes (PATCH)**
 (source: https://developer.apple.com/documentation/appstoreconnectapi/ageratingdeclarationupdaterequest/data-data.dictionary/attributes-data.dictionary)
@@ -135,6 +135,25 @@ Steps:
 9. **Limits** for App Store versions: **10 screenshots, 3 previews and 1 product page header per group**. Read the real values from `groupLimits`.
 10. **Delete**: delete the placements first, then the asset. Deleting an asset that still has placements returns 409 `STATE_ERROR.ASSET_HAS_PLACEMENTS`. Archiving (`archived:true`) works only on APPROVED assets.
 11. **Review**: placements go through review with their parent. Standalone asset review is also possible with a `reviewSubmissionItems` relationship `appAssetLibraryImage` / `appAssetLibraryVideo`.
+
+Apple Watch (kit folder `screenshots/<locale>/watch/`): asc_sync picks the display class per file by its pixel size,
+and the placement group from `placementProfileGroups` with platform `WATCH_APP_STORE`
+(`AppAssetLibraryPlacementPlatform`: `IPHONE_APP_STORE`, `IPAD_APP_STORE`, `WATCH_APP_STORE`, `IMESSAGE_APP_STORE`,
+`VISION_PRO_APP_STORE`, `MAC_APP_STORE`, `TV_APP_STORE`, `ANY`):
+
+| Pixels (portrait) | Watch | Display class |
+|---|---|---|
+| 422 × 514 | Ultra 3 | `WATCH_ULTRA` (UNCONFIRMED: the enum has one Ultra class) |
+| 410 × 502 | Ultra, Ultra 2 | `WATCH_ULTRA` |
+| 416 × 496 | Series 10/11, 46 mm | `WATCH_SERIES_10` |
+| 396 × 484 | Series 7/8/9, 45 mm | `WATCH_SERIES_7` |
+| 368 × 448 | Series 4-6, SE, 44 mm | `WATCH_SERIES_4` |
+| 312 × 390 | Series 3, 42 mm | `WATCH_SERIES_3` |
+
+UNCONFIRMED: the live watch group ids (the kit's test fake uses `WATCH_SERIES_10_PROFILE`; asc_sync only ever reads
+them from the ref data) and whether the ref data lists watch groups for an iOS app record with an embedded watch app.
+A file of another size is skipped with a warning. Source:
+https://developer.apple.com/documentation/appstoreconnectapi/appassetlibraryplacementplatform
 
 Enums:
 - **`AppAssetLibraryPlacementType`**: `APP_SCREENSHOT`, `IMESSAGE_APP_SCREENSHOT`, `APP_PREVIEW`, `PRODUCT_PAGE_HEADER_ASSET`, `APP_STORE_SEARCH_RESULTS_ASSET`, `SEARCH_RESULTS_ADS_ASSET`, `TODAY_TAB_ADS_ASSET`, `EVENT_CARD_ASSET`, `EVENT_DETAILS_PAGE_ASSET`, `RETENTION_MESSAGE_ASSET`
@@ -241,9 +260,9 @@ Source: https://developer.apple.com/documentation/appstoreconnectapi/managing-in
 | Step | Endpoint | Notes |
 |---|---|---|
 | Create the IAP | `POST /v2/inAppPurchases` | `name`, `productId`, `inAppPurchaseType` (CONSUMABLE / NON_CONSUMABLE / NON_RENEWING_SUBSCRIPTION), `reviewNote`, `familySharable`, relationship `app`. List them with `GET /v1/apps/{id}/inAppPurchasesV2`. |
-| Version (draft container) | `POST /v1/inAppPurchaseVersions` (relationship `inAppPurchase`) | States: PREPARE_FOR_SUBMISSION, then READY_FOR_REVIEW, WAITING_FOR_REVIEW, IN_REVIEW, then APPROVED or REJECTED. Source: https://developer.apple.com/documentation/appstoreconnectapi/working-with-in-app-purchase-versions |
-| Localizations | `POST /v2/inAppPurchaseLocalizations` (`locale`, `name`, `description`, relationship to the **version**) | `POST /v1/inAppPurchaseLocalizations` is deprecated but still works |
-| Review screenshot or images | Old: `POST /v1/inAppPurchaseAppStoreReviewScreenshots`, then PUT, then PATCH (`uploaded` + MD5). New: version-scoped `POST /v2/inAppPurchaseImages` (+ `GET /v1/inAppPurchaseVersions/{id}/image`). | Apple's own docs disagree on which one carries the *review* screenshot. Support both; prefer v2 (UNCONFIRMED). |
+| Version (draft container) | `POST /v1/inAppPurchaseVersions` (relationship `inAppPurchase`); list with **`GET /v2/inAppPurchases/{id}/versions`** (the relationship is `versions`, not `inAppPurchaseVersions`: that name answers 404 "The relationship 'inAppPurchaseVersions' does not exist") | States (`InAppPurchaseVersion.state`): PREPARE_FOR_SUBMISSION, READY_FOR_REVIEW, WAITING_FOR_REVIEW, IN_REVIEW, ACCEPTED, APPROVED, REPLACED_WITH_NEW_VERSION, REJECTED, DEVELOPER_REJECTED. Only PREPARE_FOR_SUBMISSION takes edits. The POST documents 409: a second version beside the in-flight one is refused (live 2026-10-15), so asc_sync reuses the editable version, makes a new one only when none is in flight, and skips (with a warning) a purchase whose version is READY_FOR_REVIEW / WAITING_FOR_REVIEW / IN_REVIEW. UNCONFIRMED: whether a new version copies the previous version's localizations (asc_sync looks for each locale on it first, then creates). Source: https://developer.apple.com/documentation/appstoreconnectapi/working-with-in-app-purchase-versions |
+| Localizations | `POST /v2/inAppPurchaseLocalizations` (`locale`, `name`, `description`, relationship **`version`** → `inAppPurchaseVersions`); `GET`/`PATCH`/`DELETE /v2/inAppPurchaseLocalizations/{id}`; list with **`GET /v1/inAppPurchaseVersions/{id}/localizations`** | Deprecated but still working for a purchase with no `versions`: `POST /v1/inAppPurchaseLocalizations` (relationship `inAppPurchaseV2`), `PATCH /v1/inAppPurchaseLocalizations/{id}`, list `GET /v2/inAppPurchases/{id}/inAppPurchaseLocalizations`. A locale that is already there is changed, not posted again (asc_sync re-reads on a 409). Sources: https://developer.apple.com/documentation/appstoreconnectapi/post-v2-inapppurchaselocalizations , https://developer.apple.com/documentation/appstoreconnectapi/migrating-in-app-purchase-metadata-to-v2 |
+| Review screenshot or images | Old: `POST /v1/inAppPurchaseAppStoreReviewScreenshots`, then PUT, then PATCH (`uploaded` + MD5). New: version-scoped `POST /v2/inAppPurchaseImages` (relationship **`version`**) (+ `GET /v1/inAppPurchaseVersions/{id}/image`). | Apple's own docs disagree on which one carries the *review* screenshot. Support both; prefer v2 (UNCONFIRMED). |
 | Price | `GET /v2/inAppPurchases/{id}/pricePoints?filter[territory]=USA`, then `POST /v1/inAppPurchasePriceSchedules` | Relationships `inAppPurchase`, `baseTerritory`, `manualPrices[]`, with `included` inline `inAppPurchasePrices` (`startDate` null = now). Price increases can't be reverted. |
 | Availability | `POST /v1/inAppPurchaseAvailabilities` | `availableInNewTerritories` + `availableTerritories[]` |
 | Submit (later IAPs) | `POST /v1/reviewSubmissions`, then `POST /v1/reviewSubmissionItems` with `inAppPurchaseVersion`, then `PATCH submitted:true` | `POST /v1/inAppPurchaseSubmissions` is deprecated in 4.4.1 |
@@ -452,8 +471,10 @@ Read on a live account with an App Manager team key. They override anything abov
   `{"placementProfileGroupId": "IPHONE_DYNAMIC_ISLAND_MEDIUM_PROFILE", "platform": "IPHONE_APP_STORE", "displayClassId": "IPHONE_DYNAMIC_ISLAND_MEDIUM_DISPLAY"}`
   (iPad: `IPAD_APP_STORE`; Duo: `IPHONE_DUO_PROFILE` / `IPHONE_DUO`). Up to 10 screenshots per group.
 - **`GET /v1/appStoreVersions?filter[app]=…` is forbidden (no GET_COLLECTION).** Use `GET /v1/apps/{id}/appStoreVersions`.
-- **Unversioned in-app purchases:** `GET /v2/inAppPurchases/{id}/inAppPurchaseVersions` → 404 "The relationship
-  'inAppPurchaseVersions' does not exist". The review screenshot is `GET /v2/inAppPurchases/{id}/appStoreReviewScreenshot`
+- **In-app purchase versions:** `GET /v2/inAppPurchases/{id}/inAppPurchaseVersions` → 404 "The relationship
+  'inAppPurchaseVersions' does not exist". That was the wrong relationship name (Apple's is `versions`), not proof the
+  purchase is unversioned; corrected 2026-10-15 after the kit POSTed a second version beside the in-flight one and got
+  409. The review screenshot is `GET /v2/inAppPurchases/{id}/appStoreReviewScreenshot`
   (`inAppPurchaseAppStoreReviewScreenshots`, `assetDeliveryState.state` COMPLETE, MD5 `sourceFileChecksum`).
   The API state is `READY_TO_SUBMIT` while the page shows "Prepare for Submission".
 - **Price:** `GET /v1/inAppPurchasePriceSchedules/{iapId}/manualPrices?include=inAppPurchasePricePoint&filter[territory]=USA`
@@ -461,3 +482,8 @@ Read on a live account with an App Manager team key. They override anything abov
 - **First in-app purchase:** no API route found. The purchase page's "Add for Review" puts it into the draft
   `reviewSubmission`; `asc_sync.py submit` then adds only the version (draft items read from
   `GET /v1/reviewSubmissions/{id}/items`; the relationship name of an IAP item is UNCONFIRMED).
+- **Second live run (JetSetAlarm 1.0, 2026-10-15):** `GET /v1/ageRatingDeclarations/{id}` → 403 with a key that could
+  write everything else (Apple lists no such GET; read through `GET /v1/appInfos/{id}/ageRatingDeclaration`).
+  `POST /v1/inAppPurchaseVersions` → 409 while the purchase's version was in flight; the browser added ru and uk to that
+  same version. A partly applied plan can now be finished with `apply --retry-failed --yes` (only the items marked
+  failed are re-sent, after the same checks as the first apply).

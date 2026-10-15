@@ -1084,3 +1084,190 @@ def test_empty_keywords_and_review_notes_clear_and_absent_ones_stay(tmp_path, ca
     for i in pj["items"]:
         if i.get("locale") in ("en-US", None):
             assert "keywords" not in (i.get("desired") or {}) and "notes" not in (i.get("desired") or {}), i
+
+
+# ------------------------------------------------------------------------------------------------ live run 2026-10-15
+def test_age_rating_is_reread_through_the_app_info_not_by_id(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()   # like Apple: GET /v1/ageRatingDeclarations/{id} answers 403
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "age")
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 0, capsys.readouterr().out
+    gets = [p for m, p, *_ in fake.calls if m == "GET"]
+    assert "/v1/ageRatingDeclarations/age1" not in gets and "/v1/appInfos/info1/ageRatingDeclaration" in gets
+    assert fake.store["age1"]["attributes"]["violenceRealistic"] == "INFREQUENT"
+
+
+def test_age_rating_403_is_a_browser_warning_not_a_failed_step(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "age,review")
+    fake.fail[("PATCH", "/v1/ageRatingDeclarations/age1")] = (403, "FORBIDDEN_ERROR")
+    capsys.readouterr()
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "warning: Age rating answers" in out and "App Information › Age Rating" in out and "error:" not in out
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    res = {r["title"]: r["result"] for r in pj["applied"]["results"]}
+    assert res["Age rating answers"] == "browser" and res["App Review information"] == "done"
+    steps = yaml.safe_load((kit / "connect-progress.yaml").read_text())["steps"]
+    assert "app-information/age-rating-set-up-age-ratings" not in steps
+    # a key that can't even read it: plan says so and hands it to the browser
+    fake.fail[("GET", "/v1/appInfos/info1/ageRatingDeclaration")] = (403, "FORBIDDEN_ERROR")
+    assert run(fake, "plan", str(kit), "--only", "age")[0] == 0
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert not pj["items"] and any("403" in w and "Age Rating" in w for w in pj["warnings"])
+    assert any("Age Rating" in s["text"] for s in pj["browser_steps"])
+
+
+def iap_kit_with_new_locales(tmp_path):
+    """The JetSetAlarm case: the purchase's in-flight version has en-US; the kit adds two more languages."""
+    kit = make_kit(tmp_path)
+    facts = yaml.safe_load((kit / "facts.yaml").read_text())
+    facts["locales"] = ["en-US", "ru", "uk"]
+    (kit / "facts.yaml").write_text(yaml.safe_dump(facts))
+    for loc, name in (("ru", "Pebble Про"), ("uk", "Pebble Про")):
+        (kit / f"metadata.{loc}.yaml").write_text(yaml.safe_dump(
+            {"iap": [{"product_id": "com.example.pebble.pro", "display_name": name, "description": "Без рекламы."}]},
+            allow_unicode=True))
+    return kit
+
+
+def test_iap_localizations_join_the_in_flight_version_instead_of_a_new_one(tmp_path, capsys):
+    kit = iap_kit_with_new_locales(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    fake.add("inAppPurchaseLocalizations", {"locale": "en-US", "name": "Old name", "description": "Removes every ad."},
+             {"version": ("inAppPurchaseVersions", "iapv1")}, id="iaploc-en")
+    # what the old code did: a second version beside the in-flight one is refused, like Apple did
+    c = api.Client(lambda: "TOKEN", transport=fake, sleep=lambda s: None)
+    with pytest.raises(api.ASCError) as e:
+        c.post("/v1/inAppPurchaseVersions", {"data": {"type": "inAppPurchaseVersions", "relationships": {
+            "inAppPurchase": {"data": {"type": "inAppPurchases", "id": "iap1"}}}}})
+    assert e.value.status == 409
+    with pytest.raises(api.ASCError) as e:   # nor is the relationship the old code read
+        c.get("/v2/inAppPurchases/iap1/inAppPurchaseVersions")
+    assert e.value.status == 404
+    run(fake, "plan", str(kit), "--only", "iap")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    it = next(i for i in pj["items"] if i["op"] == "iap")
+    assert it["version_id"] == "iapv1" and it["versioned"] is True
+    assert {(l["locale"], l["target_id"]) for l in it["locs"]} == {("en-US", "iaploc-en"), ("ru", None), ("uk", None)}
+    capsys.readouterr()
+    n = len(fake.writes())
+    code, _ = run(fake, "apply", str(kit), "--yes")
+    assert code == 0, capsys.readouterr().out
+    assert ("POST", "/v1/inAppPurchaseVersions") not in fake.writes()[n:]
+    assert ("PATCH", "/v2/inAppPurchaseLocalizations/iaploc-en") in fake.writes()[n:]
+    locs = {r["attributes"]["locale"]: r for r in fake.of_type("inAppPurchaseLocalizations")}
+    assert set(locs) == {"en-US", "ru", "uk"} and locs["en-US"]["attributes"]["name"] == "Pebble Pro"
+    assert all(r["relationships"]["version"]["data"]["id"] == "iapv1" for r in locs.values())
+    img = fake.of_type("inAppPurchaseImages")[0]
+    assert img["relationships"]["version"]["data"]["id"] == "iapv1"
+
+
+def test_iap_localization_made_meanwhile_is_changed_not_posted_twice(tmp_path, capsys):
+    kit = iap_kit_with_new_locales(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "iap")
+    # the owner added ru in the browser after the plan: the POST would be a 409, so apply changes that one
+    fake.add("inAppPurchaseLocalizations", {"locale": "ru", "name": "x", "description": "y"},
+             {"version": ("inAppPurchaseVersions", "iapv1")}, id="iaploc-ru")
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    assert len([r for r in fake.of_type("inAppPurchaseLocalizations") if r["attributes"]["locale"] == "ru"]) == 1
+    assert fake.store["iaploc-ru"]["attributes"]["name"] == "Pebble Про"
+
+
+def test_unversioned_iap_gets_localizations_on_the_purchase_and_no_version(tmp_path, capsys):
+    kit = iap_kit_with_new_locales(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    del fake.store["iapv1"]
+    fake.fail[("GET", "/v2/inAppPurchases/iap1/versions")] = (404, "NOT_FOUND")
+    run(fake, "plan", str(kit), "--only", "iap")
+    it = next(i for i in json.loads((kit / "connect-plan.json").read_text())["items"] if i["op"] == "iap")
+    assert it["versioned"] is False and it["image_kind"] == "v1"
+    assert run(fake, "apply", str(kit), "--yes")[0] == 0, capsys.readouterr().out
+    posts = [p for m, p in fake.writes() if m == "POST"]
+    assert "/v1/inAppPurchaseVersions" not in posts and posts.count("/v1/inAppPurchaseLocalizations") == 3
+    assert all(r["relationships"]["inAppPurchaseV2"]["data"]["id"] == "iap1"
+               for r in fake.of_type("inAppPurchaseLocalizations"))
+
+
+def test_iap_version_in_review_is_left_alone_with_a_warning(tmp_path):
+    kit = iap_kit_with_new_locales(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    fake.store["iapv1"]["attributes"]["state"] = "WAITING_FOR_REVIEW"
+    run(fake, "plan", str(kit), "--only", "iap")
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    it = next((i for i in pj["items"] if i["op"] == "iap"), {"locs": [], "image": None})
+    assert not it["locs"] and not it["image"]
+    assert any("WAITING_FOR_REVIEW" in w for w in pj["warnings"])
+
+
+def test_retry_failed_resends_only_what_failed(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    fake = FakeASC()
+    seed(fake)
+    run(fake, "plan", str(kit), "--only", "age,review,accessibility")
+    fake.fail[("PATCH", "/v1/ageRatingDeclarations/age1")] = (409, "ENTITY_ERROR.ATTRIBUTE.INVALID")
+    assert run(fake, "apply", str(kit), "--yes")[0] == 1
+    del fake.fail[("PATCH", "/v1/ageRatingDeclarations/age1")]
+    n = len(fake.writes())
+    capsys.readouterr()
+    assert run(fake, "apply", str(kit), "--yes")[0] == 1 and len(fake.writes()) == n
+    assert "--retry-failed" in capsys.readouterr().out
+    assert run(fake, "apply", str(kit), "--retry-failed")[0] == 2 and len(fake.writes()) == n, "still needs --yes"
+    assert run(fake, "apply", str(kit), "--retry-failed", "--dry-run")[0] == 0 and len(fake.writes()) == n
+    assert run(fake, "apply", str(kit), "--retry-failed", "--yes")[0] == 0
+    assert fake.writes()[n:] == [("PATCH", "/v1/ageRatingDeclarations/age1")]
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    assert [r["result"] for r in pj["applied"]["results"] if r["title"] == "Age rating answers"] == ["failed", "done"]
+    capsys.readouterr()
+    assert run(fake, "apply", str(kit), "--retry-failed", "--yes")[0] == 0
+    assert "Nothing to retry" in capsys.readouterr().out and len(fake.writes()) == n + 1
+
+
+def test_retry_failed_uses_the_version_the_first_run_created(tmp_path, capsys):
+    kit = make_kit(tmp_path, version="1.1.0", first=False)
+    fake = FakeASC()
+    seed_update(fake, kit)
+    run(fake, "plan", str(kit), "--only", "text,release")
+    fail_on = []
+
+    def fail_de(r):
+        loc = next(x for x in fake.of_type("appStoreVersionLocalizations") if x["attributes"]["locale"] == "de-DE"
+                   and x["relationships"]["appStoreVersion"]["data"]["id"] != "ver1")
+        fail_on.append(("PATCH", f"/v1/appStoreVersionLocalizations/{loc['id']}"))
+        fake.fail[fail_on[0]] = (409, "ENTITY_ERROR")
+    orig = fake.on_create["appStoreVersions"]
+    fake.on_create["appStoreVersions"] = lambda r: (orig(r), fail_de(r))
+    assert run(fake, "apply", str(kit), "--yes")[0] == 1
+    del fake.fail[fail_on[0]]
+    n = len(fake.writes())
+    assert run(fake, "apply", str(kit), "--retry-failed", "--yes")[0] == 0, capsys.readouterr().out
+    assert fake.writes()[n:] == [fail_on[0]]
+    assert len([v for v in fake.of_type("appStoreVersions") if v["attributes"]["versionString"] == "1.1.0"]) == 1
+
+
+def test_watch_screenshots_map_to_the_watch_display_class_by_pixel_size(tmp_path, capsys):
+    kit = make_kit(tmp_path)
+    for i in range(5):
+        png(kit / f"screenshots/en-US/watch/0{i + 1}.png", "teal", size=(416, 496))
+    png(kit / "screenshots/en-US/watch/odd.png", "teal", size=(400, 400))
+    fake = FakeASC()
+    seed(fake)
+    assert run(fake, "plan", str(kit), "--only", "media")[0] == 0
+    pj = json.loads((kit / "connect-plan.json").read_text())
+    watch = [i for i in pj["items"] if i["op"] == "media_slot" and i["slot"] == "watch"]
+    assert len(watch) == 1
+    assert watch[0]["display_class"] == "WATCH_SERIES_10" and watch[0]["group"] == "WATCH_SERIES_10_PROFILE"
+    assert [r["action"] for r in watch[0]["rows"]] == ["add"] * 5
+    assert not any("no Asset Library display class" in w for w in pj["warnings"])
+    assert any("watch/odd.png" in w and "400×400" in w for w in pj["warnings"])
+    assert sync.watch_class(kit / "screenshots/en-US/watch/01.png") == ("WATCH_SERIES_10", None)

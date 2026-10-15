@@ -8,6 +8,8 @@ Reads what the other scripts leave in the kit and writes KIT/STATUS.md:
   - connect-progress.yaml + the guide steps (connect_guide.py): every App Store Connect step, in order
   - connect-plan.json  (asc_sync.py plan): changes waiting for the owner's yes, browser and person steps
   - connect-live.json  (asc_sync.py status): the live version and its state
+  - screenshots/ and creative/: "Before you submit" items the guide steps don't catch (Apple Watch screenshots
+    when the app embeds a watch app; the optional header and search-results asset)
 
 Each step gets one mark:
   ✅ done   ✋ your turn (only the owner can do it)   🛑 needs your yes   🌐 Claude in Chrome   ⬜ to do
@@ -22,8 +24,10 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import connect_guide as cg  # noqa: E402
+import validate_kit as vk  # noqa: E402
 
 DONE, PERSON, YES, BROWSER, TODO, LATER = "✅", "✋", "🛑", "🌐", "⬜", "⏸"
+MISSING = "🔴"
 # Steps the API can't do; Claude does them in Chrome (references/person-and-browser-steps.md).
 BROWSER_KEYS = ("new-app/", "privacy/", "pricing/", "version/in-app-purchases",
                 "version/phased-release-and-rating-reset")
@@ -77,7 +81,33 @@ def guide_steps(kit):
     return out
 
 
-def render(kit):
+def before_submit(kit, project=None):
+    """Open items that stop "Add for Review" (🔴) or are easy to miss before the version locks (⬜)."""
+    rows = []
+    families, notes = vk.kit_families(kit, None, project)
+    shots = kit / "screenshots"
+    locales = sorted(p.name for p in shots.iterdir() if p.is_dir()) if shots.exists() else []
+    if "watch" in families:
+        short = [loc for loc in locales or ["(no locale yet)"]
+                 if not (shots / loc / "watch").is_dir() or not 1 <= len(vk.images_in(shots / loc / "watch")) <= 10]
+        why = next((n for n in notes if n.startswith("watch app found")), "facts.yaml lists watch")
+        if short:
+            rows.append(f"{MISSING} Apple Watch screenshots missing: screenshots/<locale>/watch/ needs 1 to 10 "
+                        f"({', '.join(short)}). {why}. App Store Connect refuses Add for Review without them.")
+        else:
+            rows.append(f"{DONE} Apple Watch screenshots in every locale.")
+    creative = kit / "creative"
+    have = [f for f in creative.glob("*/*") if f.is_file() and f.stem.lower() in ("universal", "header", "search")]
+    if have:
+        rows.append(f"{DONE} Header and search-results asset: {len(have)} file(s) in creative/.")
+    else:
+        rows.append(f"{TODO} Header and search-results asset: none yet (optional; App Store Connect shows "
+                    f"\"0 of 1 Header Asset\"). Ask the owner whether to add one before submitting: on a first "
+                    f"release it must go in the same submission as the version.")
+    return rows
+
+
+def render(kit, project=None):
     L = ["# App Store status", "",
          f"{DONE} done · {PERSON} your turn · {YES} needs your yes · {BROWSER} Claude in Chrome · {TODO} to do · "
          f"{LATER} after launch", ""]
@@ -104,6 +134,10 @@ def render(kit):
         icon = "🛑" if b else ("⚠️" if lr else DONE)
         L.append(f"{icon} {b} blocker(s), {lr} likely rejection(s), {w} warning(s), "
                  f"{pc.get('PASS', 0)} passed, {pc.get('For Claude to judge', 0)} for Claude to judge. See PRECHECK.md.")
+    L.append("")
+
+    L += ["## Before you submit", ""]
+    L += [f"- {r}" for r in before_submit(kit, project)]
     L.append("")
 
     live = load_json(kit / "connect-live.json")
@@ -141,13 +175,14 @@ def render(kit):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("kit")
+    ap.add_argument("--project", help="Xcode project or built app, to detect an embedded watch app")
     ap.add_argument("--print", action="store_true", help="print instead of writing KIT/STATUS.md")
     a = ap.parse_args(argv)
     kit = pathlib.Path(a.kit)
     if not (kit / "facts.yaml").exists():
         print(f"not a kit (no facts.yaml): {kit}", file=sys.stderr)
         return 2
-    md = render(kit)
+    md = render(kit, a.project)
     if a.print:
         print(md)
     else:

@@ -35,7 +35,7 @@ from PIL import Image, ImageCms
 
 HERE = pathlib.Path(__file__).resolve().parent
 TEMPLATES = HERE.parent / "templates"
-PLACE = re.compile(r"\{\{([A-Z_]+)\}\}")
+PLACE = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 
 
 def data_uri(path: pathlib.Path) -> str:
