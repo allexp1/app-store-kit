@@ -9,3 +9,4 @@ node_modules/
 private.yaml
 connect-guide.private.html
 .venv/
+examples/**/out/

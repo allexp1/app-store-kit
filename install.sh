@@ -17,7 +17,7 @@ if [[ -d "$DEST" ]]; then
   mkdir -p "$BACKUP_ROOT"; mv "$DEST" "$BACKUP"
 fi
 mkdir -p "$DEST"
-for part in SKILL.md scripts references templates .living requirements.txt; do
+for part in SKILL.md scripts references templates examples .living requirements.txt; do
   [[ -e "${SRC}/${part}" ]] && cp -R "${SRC}/${part}" "${DEST}/${part}"
 done
 find "$DEST" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true

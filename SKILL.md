@@ -1,6 +1,6 @@
 ---
 name: app-store-kit
-description: "Takes an iOS/iPadOS app from code to the App Store and keeps it updated, hands-off. It checks the code against Apple's current review rules, writes the product page in every language the owner wants, makes screenshots per language and device, archives and uploads the build, and fills App Store Connect itself through the official API (texts, languages, screenshots, age rating, accessibility, review details, build, submit, release), using Chrome only where the API can't reach. It works step by step and stops for the person only where Apple requires them (sign-in, agreements, tax, banking, DSA): it brings the browser to that button and waits. Upload, submit and release each need a yes. Use for App Store submission, updates or new versions, adding languages, App Store Connect, screenshots, metadata, ASO, privacy labels, age rating, review notes, growth and marketing (custom product pages, product page optimization tests, in-app events), measuring conversion, App Review rejections, ratings and review replies, subscriptions, TestFlight betas, pricing and availability, or 'will Apple accept my app'."
+description: "Takes an iOS/iPadOS app from code to the App Store and keeps it updated, hands-off. It checks the code against Apple's current review rules, writes the product page in every language the owner wants, makes screenshots per language and device, archives and uploads the build, and fills App Store Connect itself through the official API (texts, languages, screenshots, age rating, accessibility, review details, build, submit, release), using Chrome only where the API can't reach. It works step by step and stops for the person only where Apple requires them (sign-in, agreements, tax, banking, DSA): it brings the browser to that button and waits. Upload, submit and release each need a yes. Use for App Store submission, updates or new versions, adding languages, App Store Connect, screenshots, designed screenshot campaigns (creative directions, panoramas, 3D devices), metadata, ASO, privacy labels, age rating, review notes, growth and marketing (custom product pages, product page optimization tests, in-app events), measuring conversion, App Review rejections, ratings and review replies, subscriptions, TestFlight betas, pricing and availability, or 'will Apple accept my app'."
 ---
 
 # App Store kit
@@ -26,6 +26,7 @@ The owner says one sentence. Work out the journey, show the status board, and go
 | "Add subscriptions", "change subscription prices" | **Subscriptions** | `subscriptions.yaml` → `check` → `plan` → `apply` 🛑 → first one with a version (browser) / later ones `submit` 🛑 |
 | "Run an external beta", "what do testers say?" | **TestFlight** | `testflight.yaml` → `plan` → `apply` 🛑 → `submit-beta` 🛑 → `feedback` |
 | "Change the price", "which countries", "pre-orders" | **Pricing** | `pricing.yaml` → `check` → `plan` → `apply` 🛑 |
+| "Make my screenshots beautiful", "a panorama", "show me directions" | **Creative campaign** | `campaign.py init` → copy (owner approves) → `concepts` → owner picks → `render` → QA → `render --install KIT` → `validate_kit.py` → Connect sync 🛑; see `references/creative-director.md` |
 
 Rules of the road:
 - **Ask only what the repo and the account can't tell you,** in one short batch: the languages, approval of the
@@ -200,7 +201,8 @@ kit/release-history.yaml       version, build, date and commit of each release (
 - If the app's core action is a gesture (swipe, drag, pinch), the first frame shows it **in motion**: capture the
   app mid-gesture (tilt, stamp, colour wash, next item underneath), not at rest, and make the swipe the app preview,
   which plays first. A resting screen with buttons doesn't say "swipe".
-- Show 2–3 visual directions side by side and let the human pick one before producing every size.
+- Show visual directions side by side and let the human pick one before producing every size: `campaign.py concepts`
+  renders six as a contact sheet from the real screens (`references/creative-director.md`).
 
 **5. Capture.** Use `scripts/capture.sh` per screen, device, locale and appearance:
 - boots the simulator and sets the status bar override (9:41, full battery, Wi-Fi);
@@ -212,6 +214,9 @@ kit/release-history.yaml       version, build, date and commit of each release (
 Native sizes: iPhone 17 gives 1206 × 2622, iPad Pro 13-inch gives 2064 × 2752. Captures come out RGBA; that's fixed at compose time.
 
 **6. Compose.** Pick **one final renderer:**
+- **Campaign** (designed sets: panoramas across panels, 3D devices, editorial type, RTL mirroring):
+  `python3 scripts/campaign.py render KIT/campaign/campaign.yaml --install KIT`. Exact sizes, QA report, and an
+  editable Claude Design canvas on request. Details in `references/creative-director.md`.
 - **Figma** (when the human wants to design there): seed with `render.py --html-only` + `html_to_figma`, compose with Apple's "iOS and iPadOS 27" library via `use_figma` (load `/figma-use` first), and export with `download_assets` at scale 1. Details in `references/figma.md`.
 - **HTML**: `python3 scripts/render.py kit/frames.yaml` produces exact-size PNGs (Playwright, or the cached chrome-headless-shell). Templates are in `templates/`.
 
@@ -524,10 +529,12 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/subscriptions.py` | `check\|status\|plan\|apply\|submit KIT [--dry-run] [--yes] [--price-increase-ok]`: groups, products, localizations, prices, offers, review screenshots; no deletes |
 | `scripts/testflight.py` | `status\|plan\|apply\|submit-beta\|feedback KIT`; `plan --build N [--submit-beta]`; writes need `--yes`; `feedback` → `TESTFLIGHT-FEEDBACK.md` |
 | `scripts/pricing.py` | `check\|status\|plan\|apply KIT [--dry-run] [--yes] [--remove-territories-ok]`: prices from Apple's price points, scheduled changes, territories, pre-orders |
+| `scripts/campaign.py` | `analyze`, `init KIT`, `check`, `concepts` (six directions → contact sheet), `render [--engine] [--locale]... [--slot]... [--panel N] [--install KIT] [--offline]`, `eject`, `validate OUT`, `canvas` / `canvas-link` (Claude Design), `engines`, `presets`; code in `scripts/studio/` |
 | `scripts/snapshot_rules.py` | `freeze KIT`, `check`: page-text hashes of the Apple sources |
 | `scripts/rules.json` | the baseline rule table (fetched 2026-10-14) |
 
-The Python scripts need Pillow and PyYAML. `render.py` also needs Playwright for Python or any Chromium binary.
+The Python scripts need Pillow and PyYAML. `render.py` also needs Playwright for Python or any Chromium binary;
+`campaign.py` needs a Chromium binary (the Playwright cache's chrome-headless-shell, or `$CHROME`).
 Run the tests with `python3 -m pytest` in this folder.
 
 ## References
@@ -554,3 +561,5 @@ Run the tests with `python3 -m pytest` in this folder.
 - `references/subscriptions.md`: groups, levels, limits, first-subscription rule, price-change consent, API shapes
 - `references/testflight.md`: internal and external testing, beta review, limits, feedback and crash API
 - `references/pricing-and-availability.md`: price points, territories, scheduled prices, pre-orders
+- `references/creative-director.md`: designed screenshot campaigns: workflow, modes A–J, the campaign file and its
+  units, engines, type presets, copy rules, rendering, QA, RTL, the Claude Design canvas, limitations

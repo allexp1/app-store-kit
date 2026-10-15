@@ -13,7 +13,7 @@ const pkg = require('../package.json');
 const SKILL = pkg.name;
 const src = path.resolve(__dirname, '..');
 const REQUIRED = ['SKILL.md', 'scripts'];
-const OPTIONAL = ['references', 'templates', '.living', 'requirements.txt'];
+const OPTIONAL = ['references', 'templates', 'examples', '.living', 'requirements.txt'];
 const PARTS = REQUIRED.concat(OPTIONAL.filter((p) => fs.existsSync(path.join(src, p))));
 
 const argv = process.argv.slice(2);

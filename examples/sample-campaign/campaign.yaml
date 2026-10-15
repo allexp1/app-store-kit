@@ -1,0 +1,88 @@
+# Sample campaign for "Ridgeline", a SYNTHETIC hiking app (screens/ is made by make_screens.py; it is not a real
+# product). It shows every part of a campaign file; see references/creative-director.md.
+app:
+  name: Ridgeline
+  icon: icon.png
+
+campaign:
+  name: Ridgeline launch
+  panels: 6
+  slots: [iphone-di-large]
+  locales: [en-US, he, ru]
+  primary_locale: en-US
+  engine: panoramic-flow
+  seed: 7
+  rtl_flow: mirror        # Hebrew: panel 1 sits on the right and the scene flows right to left
+
+design:
+  palette:
+    bg: "#F3EFE6"
+    bg2: "#DCE7D6"
+    ink: "#14201A"
+    muted: "#5E6B63"
+    accent: "#1F6F4A"
+    accent2: "#FF6B3D"
+    dark: "#0E1813"
+    light: "#FFFFFF"
+  type:
+    preset: friendly-consumer
+  device:
+    finish: titanium
+  grain: 0.035
+
+screens:                  # CONTENT: the app's own captures, per locale when they exist ({locale})
+  home: screens/home.png
+  map: screens/map.png
+  trails: screens/trails.png
+  stats: screens/stats.png
+  night: screens/night.png
+
+storyboard:               # COPY: one entry per panel, in store order
+  - id: hero
+    role: hero
+    screen: map
+    kicker: {en-US: "Trail maps", he: "מפות שבילים", ru: "Карты троп"}
+    headline:
+      en-US: "Find the **trail** worth the climb"
+      he: "מצאו את **השביל** ששווה את הטיפוס"
+      ru: "Найдите **тропу**, ради которой стоит идти"
+  - id: plan
+    role: value
+    screen: home
+    headline:
+      en-US: "Plan the day in **one look**"
+      he: "תכננו את היום **במבט אחד**"
+      ru: "План на день **с одного взгляда**"
+    sub:
+      en-US: "Distance, climb and daylight, before you lace up."
+      he: "מרחק, טיפוס ואור יום, עוד לפני היציאה."
+      ru: "Расстояние, подъём и светлое время до выхода."
+  - id: offline
+    role: differentiator
+    screen: night
+    headline:
+      en-US: "Turn-by-turn, **even offline**"
+      he: "ניווט צעד אחר צעד, **גם בלי קליטה**"
+      ru: "Навигация **даже без сети**"
+  - id: discover
+    role: experience
+    screen: trails
+    headline:
+      en-US: "New **trails** near you"
+      he: "**שבילים** חדשים לידכם"
+      ru: "Новые **тропы** рядом"
+  - id: progress
+    role: secondary
+    screen: stats
+    headline:
+      en-US: "Watch every **kilometre** add up"
+      he: "כל **קילומטר** נספר"
+      ru: "Каждый **километр** на счету"
+  - id: summit
+    role: closing
+    screen: map
+    screens: [home]
+    headline:
+      en-US: "Your next summit **starts here**"
+      he: "הפסגה הבאה **מתחילה כאן**"
+      ru: "Следующая вершина **начинается здесь**"
