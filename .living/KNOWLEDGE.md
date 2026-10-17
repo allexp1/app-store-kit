@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-10-14
+last_updated: 2026-10-17
 review_interval_days: 7
 mode: advisory
 spec: living-skills/1.1
@@ -47,7 +47,7 @@ spec: living-skills/1.1
   items); promo image 1024×1024 RGB flattened, no rounded corners; up to 20
   promoted items.
 
-## App Review Guidelines (no date shown on the page)
+## App Review Guidelines (Last Updated October 16, 2026)
 
 - 2.3.7: app names limited to 30 characters; no trademarks, popular app names,
   prices or irrelevant phrases in metadata.
@@ -57,6 +57,41 @@ spec: living-skills/1.1
 - 5.1.1 privacy policy link in App Store Connect and in the app; account deletion
   in-app when accounts exist. 5.1.2(i) tracking needs ATT permission; apps may not
   require enabling tracking to work.
+- Oct 16, 2026 changes: 1.2 now covers apps where people "create, generate,
+  upload, share" content, naming AI content creation apps and nonconsensual
+  intimate imagery; ignoring violations after notice may breach the Developer
+  Code of Conduct. 2.3.1(a) keeps only "describe changes with specificity" and
+  no misleading marketing; the hidden-feature ban is new **2.5.19** (obfuscation
+  to hide features = removal and account termination). New **2.3.14** for
+  header/search creative assets (brand or content, all audiences, no prices,
+  misleading app references or unverifiable claims). 3.1.1(a): links go to "a
+  permitted destination", entitlements per storefront "only on certain
+  platforms", the Music Streaming Services Entitlement now named in
+  the External Purchase Link bullet ("or, where permitted"). Section 5: trafficking or child exploitation apps are also
+  "blocked from alternative distribution". Before You Submit adds regulatory
+  documentation. "e.g." became "such as" throughout.
+
+## App Review Help (developer.apple.com/help/app-review, read 2026-10-17)
+
+- 2.3.3: more than half of the screenshots, per device type and language, must
+  show the app in use (3 → 2, 4 → 3); login/splash screens don't count.
+- Purpose strings: Apple's bad examples "To use location." and "Your data will be
+  used to provide a better experience."; one active sentence ending with a
+  period; localized; SDK-triggered permissions are the developer's to explain.
+- Complete review: concept/business model or what changed and where; devices and
+  OS tested; external services; hardware as a video; regional differences; demo
+  account per account type plus an expired subscription; auth codes in advance;
+  regulated-field documents per guideline.
+- IAP in review: Paid Apps Agreement in effect; fetch products via StoreKit;
+  storefront/device limits in the notes; no prior approval needed.
+- Account deletion: guest accounts too; revoke Sign in with Apple tokens; tell
+  subscribers billing continues; deletion scheduled for the subscription's
+  end only beside an immediate option; manual deletion may take reasonable time.
+- Removals: 14 days (less severe), immediate (serious), final for incompatible
+  concepts; App Store Improvements: 3 years without update + almost no downloads
+  → 90 days. Appeals: one per rejected or removed app, up to five per form.
+  Expedite only after submitting, reason in the Notes. Appointments: Webex,
+  Tuesdays and Thursdays, advice only.
 
 ## Privacy labels
 

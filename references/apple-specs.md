@@ -38,6 +38,11 @@ Source: [Screenshot specifications](https://developer.apple.com/help/app-store-c
 | `vision` | Apple Vision Pro | 3840 × 2160 | Required for visionOS apps |
 | `watch` | Apple Watch, Ultra 4/3: 422 × 514; Ultra 2/1: 410 × 502; S12–S10: 416 × 496; S9–S7: 396 × 484; S6–S4/SE: 368 × 448; S3–S1: 312 × 390 | as listed | Required for watchOS apps. Use the same size in every localization |
 
+Read 2026-10-17: "When you submit iPhone Duo screenshots in App Store Connect, your App Store product page will
+display a badge to let people know your app is optimized for iPhone Duo." Uploading Duo sets early is worth it for
+apps that work well on both displays. The same 2.3.3 majority rule applies to them: more than half per device type
+and language must show the app in use (`review-guidelines.md`).
+
 Native simulator captures that land exactly on a required size: **iPhone 17 = 1206 × 2622**,
 iPhone 17 Pro Max = 1320 × 2868, iPad Pro 13-inch (M5) = 2064 × 2752. Check the numbers again when new devices ship.
 

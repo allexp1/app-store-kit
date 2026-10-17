@@ -7,10 +7,17 @@ Usage:
 
 metadata.<locale>.yaml keys: name, subtitle, promotional_text, description, keywords (string "a,b,c"
 or list), whats_new, support_url, marketing_url, privacy_policy_url, category {primary, secondary},
-copyright, review_notes, iap [{product_id, display_name, description}].
+copyright, review_notes, review_notes_file, iap [{product_id, display_name, description}].
 
 facts.yaml keys used here (all optional): company, first_version (bool), has_iap (bool),
 has_ads (bool), kids_category (bool), claims [phrases the app can back up], competitors [names].
+Review checks also read app.version/version, has_subscription, monetization.iap[].type.
+Optional review facts: has_login/sign_in_required (bool), review.hardware (required hardware,
+bool or description), review.external_services (list or bool), third_party_ai,
+payment_services, auth_services (list or bool). These declarations only enable warnings;
+completeness is judged heuristically from the resolved notes, never from private.yaml.
+The CLI resolves notes beside each metadata file with connect_guide.review_notes_text;
+callers of lint() can pass kit=KIT_DIR for the same file resolution.
 
 Errors are Apple limits or App Review rules; warnings are ASO hygiene or things a human must judge.
 Exit 1 on any error (or any warning with --strict).
@@ -24,6 +31,8 @@ import re
 import sys
 
 import yaml
+
+from connect_guide import review_notes_text
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -80,13 +89,70 @@ def words(text):
     return {w for w in re.findall(r"[\w']+", (text or "").lower()) if len(w) > 1}
 
 
-def lint(meta: dict, facts: dict, rules: dict, scope="metadata") -> Findings:
+REVIEW_HELP = "https://developer.apple.com/help/app-review/before-submitting-for-review/complete-review"
+
+
+def lint_review_notes(notes, meta, facts, f):
+    def has(pattern):
+        return re.search(pattern, notes, re.I) is not None
+
+    def warn(message):
+        f.w(f"MD-14: review notes {message} (2.1 / Before You Submit; {REVIEW_HELP})")
+
+    n = measure(notes, "bytes")
+    if n > 4000:
+        f.e(f"MD-14: review_notes is {n} bytes, limit 4000 (2.1; {REVIEW_HELP})")
+    if not has(r"\b(?:iPhone|iPad|MacBook|Apple Watch|Vision Pro)\b|\b(?:iOS|iPadOS|macOS|watchOS|tvOS|visionOS)\s+\d+"):
+        warn("may be missing devices and OS versions tested")
+    if not has(r"\b(?:regions?|regional|countries|country|storefronts?)\b"):
+        warn("may be missing a statement on regional differences")
+    version = meta.get("version") or (facts.get("app") or {}).get("version") or facts.get("version")
+    parts = re.findall(r"\d+", str(version or ""))
+    update = facts.get("first_version") is False or meta.get("first_version") is False or bool(meta.get("whats_new"))
+    update = update or bool(parts and tuple(map(int, (parts + ["0", "0"])[:3])) > (1, 0, 0))
+    if update and not has(r"\b(?:new|added|changed|updated|improved|fixed|removed|changes|what.s new)\b"):
+        warn("may be missing what changed in this update")
+    elif update and has(r"\b(?:new|added|introduc\w*)\b") and not has(
+            r"\b(?:tap|open|navigate|select|visit|go to|find|screen|tab|menu|settings)\b"):
+        warn("may be missing where to find what changed (new features need a path)")
+    products = (facts.get("monetization") or {}).get("iap") or []
+    subscriptions = facts.get("has_subscription") or any(
+        re.sub(r"[^a-z]", "", str(p.get("type", "")).lower()) in
+        ("autorenewable", "autorenewablesubscription", "subscription") for p in products)
+    if subscriptions and not (has(r"\bexpired\b") and has(r"\bsubscription\b")
+                              and has(r"\b(?:demo|test)\s+account\b")):
+        warn("may be missing an expired-subscription demo account")
+    if (facts.get("has_login") or facts.get("sign_in_required")) and not has(
+            r"\b(?:demo\s+(?:account|mode)|credentials?|username|password)\b"):
+        warn("may be missing demo account credentials or demo mode instructions")
+    review = facts.get("review") or {}
+    if review.get("hardware") and not has(r"\bvideo\b"):
+        warn("may be missing a video of required hardware")
+    if (review.get("external_services") or facts.get("third_party_ai") or facts.get("payment_services")
+            or facts.get("auth_services")) and not has(
+            r"\b(?:external|third[- ]party)\s+(?:services?|platforms?|tools?|AI|authentication|payments?)\b|"
+            r"\b(?:AI|authentication|auth|payment)\s+(?:services?|providers?|processors?)\b"):
+        warn("may be missing external services used for core functionality")
+
+
+def lint(meta: dict, facts: dict, rules: dict, scope="metadata", kit=None, seen_notes=None) -> Findings:
     f = Findings(scope)
     lim = rules["text_limits"]
     facts = facts or {}
 
+    notes = review_notes_text(pathlib.Path(kit), meta) if kit is not None else str(meta.get("review_notes") or "").strip()
+    # Review notes are one text per app: lint them once per distinct text (seen_notes).
+    if seen_notes is None or notes not in seen_notes:
+        if notes:
+            lint_review_notes(notes, meta, facts, f)
+        else:
+            f.w(f"MD-14: no review notes: say what the app does, devices tested, regional differences and how "
+                f"to reach every feature (2.1 / Before You Submit; {REVIEW_HELP})")
+        if seen_notes is not None:
+            seen_notes.add(notes)
+
     # ---- limits -------------------------------------------------------------------------------
-    for key in ["name", "subtitle", "promotional_text", "description", "whats_new", "review_notes"]:
+    for key in ["name", "subtitle", "promotional_text", "description", "whats_new"]:
         val = meta.get(key)
         rule = lim.get(key)
         if rule is None:
@@ -283,8 +349,9 @@ def main(argv=None):
         return 2
     total_e = total_w = 0
     out = []
+    seen_notes = set()
     for p in files:
-        f = lint(load_yaml(p), facts, rules, p.name)
+        f = lint(load_yaml(p), facts, rules, p.name, kit=p.parent, seen_notes=seen_notes)
         total_e += len(f.errors); total_w += len(f.warnings)
         out.append({"file": str(p), "errors": f.errors, "warnings": f.warnings})
         if not a.json:

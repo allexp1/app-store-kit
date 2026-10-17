@@ -4,16 +4,22 @@
 Usage:
   render_creative.py HTML --out KIT/creative/<locale>/universal.png [--kind universal|header|search]
                      [--set NAME=FILE ...] [--guides PREVIEW.jpg] [--renderer auto|playwright|chrome]
+                     [--evidence "where a number or award comes from"]
 
 HTML is a page whose first element has class "frame" and the asset's exact size (templates/creative-universal.html
 is a starting point). {{NAME}} placeholders are filled with --set NAME=FILE as data URIs, or NAME=#hex / text.
 The PNG comes out RGB with no alpha, which Apple requires. --guides writes a small JPEG with the art safe areas
 from Apple's Figma template (apple-specs.md › Creative assets): yellow = this asset's safe area; on a universal
 asset, cyan = the header (21:9) and search (3:2) crops and magenta = their safe areas.
+
+The asset's visible text is checked against guideline 2.3.14 (October 16, 2026) and Apple's asset best practices
+before anything is rendered: no specific or discounted prices, URLs, (c) marks, other platforms or Apple
+recognitions, and no ranking, user count, rating or award without --evidence. An error stops the render.
 """
 from __future__ import annotations
 
 import argparse
+import html as htmlmod
 import pathlib
 import re
 import sys
@@ -23,6 +29,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import render  # noqa: E402
+from studio import spec as S  # noqa: E402
 
 LEFTOVER = re.compile(r"\{\{[^{}]*\}\}")
 
@@ -63,6 +70,24 @@ def guides(png, kind, out):
     im.save(out, quality=88)
 
 
+def visible_text(html: str) -> str:
+    """The words a viewer reads: the <head>, scripts, styles, templates, hidden elements, tags and data URIs
+    removed, entities decoded (&#36;4.99 is a price)."""
+    t = re.sub(r"(?is)<head\b.*?</head>", " ", html)
+    t = re.sub(r"(?is)<(script|style|template|title)[^>]*>.*?</\1>", " ", t)
+    t = re.sub(r"(?is)<(\w+)\b[^>]*(\shidden\b|display\s*:\s*none|aria-hidden=\"true\")[^>]*>.*?</\1>", " ", t)
+    t = re.sub(r"data:[^\s\"')]+", " ", t)
+    t = re.sub(r"(?s)<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", htmlmod.unescape(t)).strip()
+
+
+def copy_issues(html: str, evidence=None) -> list:
+    """Guideline 2.3.14: (level, message) for the asset's visible text."""
+    issues = []
+    S.check_copy(visible_text(html), "asset text", evidence, issues)
+    return [(lvl, msg) for lvl, _, msg in issues]
+
+
 def values(pairs):
     out = {}
     for p in pairs or []:
@@ -80,6 +105,7 @@ def main(argv=None):
     ap.add_argument("--set", action="append", metavar="NAME=FILE")
     ap.add_argument("--guides")
     ap.add_argument("--renderer", default="auto", choices=["auto", "playwright", "chrome"])
+    ap.add_argument("--evidence", help="where a number, rating or award in the text comes from")
     a = ap.parse_args(argv)
     (w, h), _ = FRAMES[a.kind]
     html = pathlib.Path(a.html).read_text()
@@ -98,6 +124,11 @@ def main(argv=None):
     left = sorted(set(LEFTOVER.findall(src)))
     if left:                                  # a name the placeholder pattern cannot match, e.g. {{left-1}}
         print(f"error: unfilled placeholders after substitution: {', '.join(left)}", file=sys.stderr)
+        return 2
+    issues = copy_issues(src, a.evidence)
+    for lvl, msg in issues:
+        print(f"{lvl}: 2.3.14 creative assets: {msg}", file=sys.stderr)
+    if any(lvl == "error" for lvl, _ in issues):
         return 2
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)

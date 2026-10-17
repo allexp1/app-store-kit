@@ -63,7 +63,7 @@ def ids(data, sev=None):
 
 def test_catalogue_parses_all_rules():
     cat = pc.load_catalogue()
-    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 101
+    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 105
     assert cat["UP-05"]["severity"] == "BLOCKER"
     assert cat["DF-13"]["severity"] == "WARNING"
     assert cat["PAY-02"]["sources"][0].startswith("https://developer.apple.com")
@@ -355,3 +355,152 @@ def test_release_config_wins_and_infoplist_key_is_used(tmp_path):
         "MARKETING_VERSION = 0.9;", "INFOPLIST_KEY_CFBundleShortVersionString = 2.1;"))
     assert pc.Project(root).info_value("CFBundleShortVersionString", "MARKETING_VERSION") == \
         ("2.1", "build setting INFOPLIST_KEY_CFBundleShortVersionString")
+
+
+# --- October 16, 2026 guidelines ---------------------------------------------------------------------------
+
+def asks(data, cid):
+    return [c for c in data["candidates"] if c["id"] == cid]
+
+
+def test_vague_purpose_string_fails_apples_own_examples(tmp_path, capsys):
+    for text in ("To use location.", "Your data will be used to provide a better experience."):
+        root = make_project(tmp_path / str(len(text)), info={"NSLocationWhenInUseUsageDescription": text})
+        _, data = run_json(root, capsys)
+        assert "UP-09" in ids(data, "LIKELY REJECTION"), text
+
+
+def test_specific_purpose_string_passes_and_missing_period_is_asked(tmp_path, capsys):
+    good = "The app uses your location to recommend a route and give turn-by-turn directions"
+    root = make_project(tmp_path, info={"NSLocationWhenInUseUsageDescription": good})
+    _, data = run_json(root, capsys)
+    assert "UP-09" not in ids(data)
+    assert "closing period" in asks(data, "UP-09")[0]["question"]
+
+
+def test_purpose_strings_must_be_localized_when_the_app_is(tmp_path, capsys):
+    info = {"NSCameraUsageDescription": "The app uses the camera to scan your boarding pass into your trips."}
+    root = make_project(tmp_path, info=info, xcstrings_langs=("en", "he", "fr"))
+    _, data = run_json(root, capsys)
+    f = [f for f in data["findings"] if f["id"] == "UP-19"]
+    assert f and "fr, he" in f[0]["message"]
+    (root / "App" / "InfoPlist.xcstrings").write_text(json.dumps({"sourceLanguage": "en", "strings": {
+        "NSCameraUsageDescription": {"localizations": {l: {"stringUnit": {"state": "translated", "value": "x"}}
+                                                       for l in ("en", "he", "fr")}}}}))
+    _, data = run_json(root, capsys)
+    assert "UP-19" not in ids(data)
+    assert any(p["id"] == "UP-19" for p in data["passes"])
+
+
+def test_single_language_app_needs_no_purpose_translation(tmp_path, capsys):
+    info = {"NSCameraUsageDescription": "The app uses the camera to scan your boarding pass into your trips."}
+    _, data = run_json(make_project(tmp_path, info=info), capsys)
+    assert "UP-19" not in ids(data)
+
+
+def test_review_detection_is_a_hidden_feature(tmp_path, capsys):
+    swift = 'let isAppleReviewer = UserDefaults.standard.bool(forKey: "r")\nif !isAppleReviewer { showCasino() }\n'
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    assert "DF-24" not in ids(data)                      # Claude reads what it does: a demo mode is allowed
+    assert any("2.5.19" in c["question"] and "demo mode" in c["question"] for c in asks(data, "DF-24"))
+
+
+def test_generic_review_names_are_asked_not_failed(tmp_path, capsys):
+    swift = 'var reviewMode = false // the restaurant-review editor\nlet isInReview = doc.status == .pending\n'
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    assert "DF-24" not in ids(data)
+    assert any("demo mode" in c["question"] for c in asks(data, "DF-24"))
+
+
+def test_feature_flags_obfuscation_and_date_switches_are_asked(tmp_path, capsys):
+    swift = ("import FirebaseRemoteConfig\nimport SwiftShield\n"
+             "if Date() > launchDate { enableBonus() }\n")
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    qs = " ".join(c["question"] for c in asks(data, "DF-24"))
+    assert "Firebase Remote Config" in qs and "SwiftShield" in qs and "Date-based" in qs
+    assert "DF-24" not in ids(data)
+
+
+def test_plain_app_has_no_hidden_feature_signals(tmp_path, capsys):
+    _, data = run_json(make_project(tmp_path), capsys)
+    assert any(p["id"] == "DF-24" for p in data["passes"])
+
+
+def test_ai_image_generation_is_ugc_under_1_2(tmp_path, capsys):
+    swift = 'let url = URL(string: "https://api.openai.com/v1/images/generations")!\n'
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    q = asks(data, "CS-03")
+    assert q and "intimate imagery" in q[0]["question"] and "1.2" in q[0]["question"]
+
+
+def test_nudify_feature_is_a_blocker(tmp_path, capsys):
+    swift = 'let title = "Undress AI: see anyone without clothes"\n'
+    code, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    assert "CS-03" in ids(data, "BLOCKER") and code == 2
+
+
+def test_short_specific_purpose_string_is_asked_not_failed(tmp_path, capsys):
+    root = make_project(tmp_path, info={"NSCameraUsageDescription": "This app needs access to your camera to scan receipts."})
+    _, data = run_json(root, capsys)
+    assert "UP-09" not in ids(data)
+    root = make_project(tmp_path / "b", info={"NSCameraUsageDescription": "Scans receipts."})
+    _, data = run_json(root, capsys)
+    assert "UP-09" not in ids(data) and "Short" in asks(data, "UP-09")[0]["question"]
+    root = make_project(tmp_path / "c", info={"NSCameraUsageDescription": "This app needs access to your camera."})
+    _, data = run_json(root, capsys)
+    assert "UP-09" in ids(data, "LIKELY REJECTION")
+
+
+def _xc(root, table):
+    (root / "App" / "InfoPlist.xcstrings").write_text(json.dumps({"sourceLanguage": "en", "strings": {
+        k: {"localizations": {l: {"stringUnit": {"state": s, "value": v}} for l, (s, v) in locs.items()}}
+        for k, locs in table.items()}}))
+
+
+def test_purpose_localization_is_checked_per_key_and_language(tmp_path, capsys):
+    info = {"NSCameraUsageDescription": "The app uses the camera to scan your boarding pass into your trips.",
+            "NFCReaderUsageDescription": "The app reads the NFC tag on your luggage to find it in your trips."}
+    root = make_project(tmp_path, info=info, xcstrings_langs=("en", "fr"))
+    _xc(root, {"NSCameraUsageDescription": {"fr": ("translated", "x")},
+               "NFCReaderUsageDescription": {"fr": ("new", "")}})
+    _, data = run_json(root, capsys)
+    f = [f for f in data["findings"] if f["id"] == "UP-19"]
+    assert f and "fr: NFCReaderUsageDescription" in f[0]["message"]
+    (root / "App" / "InfoPlist.xcstrings").unlink()
+    lp = root / "App" / "fr.lproj"
+    lp.mkdir()
+    (lp / "InfoPlist.strings").write_text("/* empty */\n")
+    _, data = run_json(root, capsys)
+    assert "fr: all" in [f for f in data["findings"] if f["id"] == "UP-19"][0]["message"]
+    (lp / "InfoPlist.strings").write_text('"NSCameraUsageDescription" = "Pour scanner.";\n'
+                                          'NFCReaderUsageDescription = "Pour lire.";\n', encoding="utf-16")
+    _, data = run_json(root, capsys)
+    assert "UP-19" not in ids(data)
+
+
+def test_nudify_word_in_a_denylist_is_asked_not_blocked(tmp_path, capsys):
+    swift = 'let blockedPrompts = ["nudify", "undress"] // moderation denylist\n'
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    assert "CS-03" not in ids(data)
+    assert any("denylist" in c["question"] for c in asks(data, "CS-03"))
+
+
+def test_text_generation_is_asked_under_1_2(tmp_path, capsys):
+    swift = "import FoundationModels\nlet session = LanguageModelSession()\n"
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    assert any("Generative text" in c["question"] and "1.2" in c["question"] for c in asks(data, "CS-03"))
+
+
+def test_nudify_needs_a_target_and_filter_is_not_moderation(tmp_path, capsys):
+    swift = 'let a = "Undress before stepping on the scale"\nlet b = "Upload your X-ray photo"\n'
+    _, data = run_json(make_project(tmp_path, swift=swift), capsys)
+    assert "CS-03" not in ids(data)
+    swift = 'let title = "Undress AI filter"\n'
+    _, data = run_json(make_project(tmp_path / "b", swift=swift), capsys)
+    assert "CS-03" in ids(data, "BLOCKER")
+
+
+def test_vague_benefit_with_a_concrete_use_is_asked_not_failed(tmp_path, capsys):
+    text = "We use your location to show nearby cafes for a better experience."
+    _, data = run_json(make_project(tmp_path, info={"NSLocationWhenInUseUsageDescription": text}), capsys)
+    assert "UP-09" not in ids(data)

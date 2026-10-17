@@ -1,5 +1,6 @@
 import hashlib
 import json
+import pathlib
 
 import pytest
 
@@ -75,3 +76,13 @@ def test_missing_baseline_is_reported_even_offline(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(sr, 'fetch', fail)
     assert sr.check(path) == 3
     assert 'no baseline a' in capsys.readouterr().out
+
+
+def test_shipped_rules_track_the_october_2026_guidelines_and_review_help():
+    rules = json.loads((pathlib.Path(sr.__file__).parent / 'rules.json').read_text())
+    by_id = {s['id']: s for s in rules['sources']}
+    assert rules['fetched'] >= '2026-10-17'
+    assert by_id['review-guidelines']['text_sha256'].startswith('13bea4397e4204cb')
+    assert 'asset-best-practices' in by_id
+    help_pages = [s['url'] for s in rules['sources'] if '/help/app-review/' in s['url']]
+    assert len(help_pages) >= 5 and all(len(s['text_sha256']) == 64 for s in rules['sources'])

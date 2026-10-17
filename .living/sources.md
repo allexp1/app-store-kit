@@ -13,6 +13,8 @@
 - https://developer.apple.com/app-store/product-page/ — product page guidance
 - https://developer.apple.com/design/resources/ — Figma kits and product bezels
 - https://developer.apple.com/news/ — announcements of new requirements (SDK minimums, new sizes)
+- https://developer.apple.com/help/app-review/ — App Review Help: complete review, screenshots 2.3.3, purpose strings, account deletion, IAP in sandbox, compatible devices, appeals, expedite, removals, App Store Improvements (author edit 2026-10-17)
+- https://developer.apple.com/app-store/asset-best-practices/ — asset best practices referenced by 2.3.14
 
 ## PRIMARY (Apple) — App Store Connect forms, field by field (references/app-store-connect-fields.md, read 2026-10-14)
 Prefix https://developer.apple.com/help/app-store-connect/

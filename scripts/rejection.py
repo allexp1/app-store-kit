@@ -79,12 +79,29 @@ GUIDES = {
             "fix": "Make the description, screenshots and privacy answers match what the reviewed build does.",
             "evidence": "The changed texts or answers, side by side with the app screens they describe.",
             "reply": "[Where in the app each described feature is.]"},
-    "2.3.1": {"title": "Hidden or undocumented features", "rules": ["MD-06"], "build": True,
-              "fix": "Describe every feature with specificity in the review notes; remove anything hidden or dormant.",
+    "2.3.1": {"title": "Accurate metadata: changes described, nothing misleading", "rules": ["MD-06", "MD-03"],
+              "build": False,
+              "fix": "Describe every new feature and product change with specificity in the review notes (generic "
+                     "notes are rejected); remove marketing for content or prices the app doesn't offer. Hidden "
+                     "features are 2.5.19 since October 16, 2026.",
               "evidence": "Updated review notes; a recording of each feature.", "reply": "[Each feature and where it is.]"},
+    "2.5.19": {"title": "Hidden, dormant or undocumented features", "rules": ["DF-24", "MD-06"], "build": True,
+               "fix": "Remove anything the reviewer can't see: review detection, server-side or date switches that "
+                      "turn on features after approval, obfuscation that hides features. Ship every feature in the "
+                      "build, reachable in review, and describe each one in the review notes.",
+               "evidence": "precheck DF-24 clean; the feature-flag list with each flag's feature and where the "
+                           "reviewer finds it; a recording of each feature.",
+               "reply": "[Each feature the flags or code paths control, and where the reviewer finds it.]"},
+    "2.3.14": {"title": "Creative assets", "rules": ["MD-13", "MD-05"], "build": False,
+               "fix": "Redo the header or search-results asset: about the app or its brand, 4+, no prices or "
+                      "discounts, no unverifiable claims, no references to other apps. render_creative.py checks "
+                      "the text.",
+               "evidence": "The new asset (kit creative/<locale>/), rendered without copy errors.",
+               "reply": "[Which asset changed and how.]"},
     "2.3.3": {"title": "Screenshots", "rules": ["MD-04", "MD-08"], "build": False,
               "fix": "Replace the screenshots with the app in use (not title art, login or splash), made from the "
-                     "reviewed build, for every device size and language flagged.",
+                     "reviewed build, for every device size and language flagged. More than half of each set "
+                     "(per device and language) must show the app in use; the rest may be marketing.",
               "evidence": "The new screenshot set (kit screenshots/<locale>/<slot>) uploaded through asc_sync.py.",
               "reply": "[Which screenshots were replaced, for which device sizes and languages.]"},
     "2.3.7": {"title": "Name, subtitle, keywords", "rules": ["MD-01", "MD-03"], "build": False,
@@ -107,8 +124,10 @@ GUIDES = {
               "evidence": "The UIBackgroundModes list and the feature for each.", "reply": "[Feature per mode.]"},
     "3.1.1": {"title": "In-App Purchase", "rules": ["PAY-01", "PAY-02", "PAY-11"], "build": True,
               "fix": "Unlock digital features only through in-app purchase, offer Restore Purchases, and remove "
-                     "buttons, links or wording that lead to other ways to pay (unless an entitlement allows it "
-                     "in that storefront).",
+                     "buttons, links or wording that lead to other ways to pay. Links are allowed only where the "
+                     "storefront and the platform permit them with an entitlement (a StoreKit External Purchase Link "
+                     "Entitlement or, where permitted, a Music Streaming Services Entitlement) and the link goes to a permitted destination; in the US "
+                     "storefront no entitlement is needed (3.1.1(a)).",
               "evidence": "Paywall screens of the new build; a sandbox purchase and restore.",
               "reply": "[If the purchase is a physical good or a service used outside the app, say which, and "
                        "where 3.1.3 or 3.1.5 allows it.]"},
@@ -121,8 +140,9 @@ GUIDES = {
             "fix": "Fix the layout or usability problem shown in Apple's screenshot (often iPad or a smaller iPhone).",
             "evidence": "The same screen on the device class Apple named.", "reply": ""},
     "4.1": {"title": "Copycats", "rules": ["DF-21"], "build": True,
-            "fix": "Change the name, icon or look that resembles another app or Apple's own.",
-            "evidence": "The new icon and name.", "reply": "[Why the app is its own product.]"},
+            "fix": "Make the app its own product: a distinct concept, not only a new name or icon, with an accurate developer "
+                   "name and a support URL you control. Renaming a copy isn't enough.",
+            "evidence": "What the app does that the original doesn't; the new icon and name; your support URL.", "reply": "[Why the app is its own product.]"},
     "4.2": {"title": "Minimum Functionality", "rules": ["DF-06"], "build": True,
             "fix": "Add native features beyond a website or a single screen of content; explain them in the notes.",
             "evidence": "A list of native features (offline use, notifications, widgets...) with screens.",
@@ -156,9 +176,12 @@ GUIDES = {
                      "the SDKs; disclose sharing with third-party AI and ask consent.",
               "evidence": "The ATT prompt timing, the SDK list, the privacy label.",
               "reply": "[Whether the app tracks, and which SDKs collect what.]"},
-    "1.2": {"title": "User-Generated Content", "rules": ["CS-01"], "build": True,
-            "fix": "Add filtering, reporting, blocking and a published contact for user content.",
-            "evidence": "Screens of report and block.", "reply": "[Where report and block are.]"},
+    "1.2": {"title": "User-Generated Content", "rules": ["CS-01", "CS-03"], "build": True,
+            "fix": "Add filtering, reporting, blocking and a published contact for user content, including AI "
+                   "output people can share; filter nonconsensual intimate imagery (AI-generated too) before it is "
+                   "shown, and remove violations you are told about.",
+            "evidence": "Screens of report and block; the filter that runs on uploads and generated output.",
+            "reply": "[Where report and block are, and how content and AI output are filtered.]"},
     "1.5": {"title": "Developer Information", "rules": ["DF-05", "MD-09"], "build": False,
             "fix": "A working support URL with contact details, in the app and in App Store Connect.",
             "evidence": "The support page, live.", "reply": ""},
@@ -403,7 +426,7 @@ def render(parsed, t, info, draft, source, decision, today):
           "- **fix**: change the app or the metadata, then resubmit (new build) or reply (metadata, same build).",
           "- **reply**: the reviewer misunderstood or wants information: explain on the App Review page.",
           f"- **bug-fix**: only when the message offers it (updates of a live app): reply to accept, don't resubmit.",
-          f"- **appeal**: after a reply didn't resolve it, to the App Review Board: {APPEAL_URL} (one per submission).",
+          f"- **appeal**: after a reply didn't resolve it, to the App Review Board: {APPEAL_URL} (one per rejected or removed app; resubmitting closes it).",
           "", f"The owner decides. Record it: `rejection.py record KIT --decision {t['path']} --note \"...\"`", ""]
     for i in t["items"]:
         L += [f"## Guideline {i['id']}" + (f": {i['title']}" if i["title"] else ""), "",

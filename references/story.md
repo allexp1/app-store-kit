@@ -9,7 +9,8 @@ Apple's points come from the [product page guidance](https://developer.apple.com
 - Focus each screenshot on **one main benefit or feature**.
 - If the app supports Dark Mode, "consider including at least one screenshot" that shows it.
 - Previews autoplay muted, so the first seconds must work without sound. Previews always come before the screenshots. A preview in a different aspect ratio from the screenshots moves to the "A Closer Look" section instead.
-- Screenshots show the app in use: not a title card, splash or login screen (2.3.3). Text and image overlays are allowed (2.3.3). Use fictional account data (2.3.9).
+- Screenshots show the app in use (2.3.3). Apple's [screenshot help](https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots) makes it a count: **more than half** of the screenshots of each device type and language must show the app in use (3 need 2, 4 need 3); the rest may be marketing (title card, value statement). A splash, login or sign-in screen doesn't count. Overlays are allowed as long as the app stays visible, and an app image may span several screenshots. Use fictional account data (2.3.9).
+- **House preference:** every panel shows a real screen. That is stricter than Apple and can be relaxed for one marketing panel; `studio/spec.py` makes Apple's majority an error and a panel without a screen only a warning (set `no_screen: true` to mean it).
 
 ## Apple's asset best practices (read 2026-10-14)
 

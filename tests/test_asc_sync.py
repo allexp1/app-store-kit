@@ -1271,3 +1271,48 @@ def test_watch_screenshots_map_to_the_watch_display_class_by_pixel_size(tmp_path
     assert not any("no Asset Library display class" in w for w in pj["warnings"])
     assert any("watch/odd.png" in w and "400×400" in w for w in pj["warnings"])
     assert sync.watch_class(kit / "screenshots/en-US/watch/01.png") == ("WATCH_SERIES_10", None)
+
+
+@pytest.mark.parametrize("demo,missing", [({"demo_user": "secret-user"}, True),
+    ({"demo_password": "secret-password"}, True), ({}, True),
+    ({"demo_user": "secret-user", "demo_password": "secret-password"}, False)])
+def test_review_credentials_need_both_values(tmp_path, capsys, demo, missing):
+    kit = make_kit(tmp_path)
+    conn = yaml.safe_load((kit / "connect.yaml").read_text())
+    conn["sign_in_required"] = True
+    (kit / "connect.yaml").write_text(yaml.safe_dump(conn))
+    (kit / "private.yaml").write_text(yaml.safe_dump({"demo": demo, "review_contact": {"phone": PHONE}}))
+    fake = FakeASC()
+    seed(fake)
+    assert run(fake, "plan", str(kit))[0] == 0
+    plan = json.loads((kit / "connect-plan.json").read_text())
+    assert any("demo_user / demo_password" in w for w in plan["warnings"]) is missing
+    output = capsys.readouterr().out + (kit / "connect-plan.json").read_text() + (kit / "connect-plan.md").read_text()
+    assert all(value not in output for value in demo.values())
+    assert fake.writes() == []
+
+
+@pytest.mark.parametrize("file_notes", [True, False])
+@pytest.mark.parametrize("length,code", [(2000, 0), (2001, 1)])
+def test_review_notes_utf8_limit_fails_plan(tmp_path, file_notes, length, code):
+    kit = make_kit(tmp_path)
+    notes = "é" * length
+    if file_notes:
+        (kit / "review-notes.md").write_text("Ignored\n---\n" + notes + "\n---\nIgnored")
+    else:
+        (kit / "review-notes.md").unlink()
+        path = kit / "metadata.en-US.yaml"
+        meta = yaml.safe_load(path.read_text())
+        meta["review_notes"] = notes
+        path.write_text(yaml.safe_dump(meta))
+    fake = FakeASC()
+    seed(fake)
+    assert run(fake, "plan", str(kit))[0] == code
+    plan = json.loads((kit / "connect-plan.json").read_text())
+    assert ("review notes are over 4000 bytes" in plan["errors"]) is bool(code)
+    assert fake.writes() == []
+    if code:
+        assert run(fake, "apply", str(kit), "--yes", "--only", "review")[0] == 1
+        assert fake.writes() == []
+        assert run(fake, "apply", str(kit), "--dry-run", "--only", "review")[0] == 1
+        assert fake.writes() == []

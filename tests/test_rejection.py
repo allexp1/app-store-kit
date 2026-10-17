@@ -375,3 +375,12 @@ def test_record_masks_a_multiline_secret(tmp_path):
     text = (kit / "connect-progress.yaml").read_text()
     assert "Hunter2-alpha-line" not in text and "second-line-of-it" not in text
     assert "[private]" in yaml.safe_load(text)["rejections"][0]["note"]
+
+
+def test_october_2026_guidelines_have_guides():
+    cat = rj.load_catalogue()
+    assert rj.guide_for("2.5.19")["rules"][0] == "DF-24" and rj.guide_for("2.5.19")["build"]
+    assert "DF-24" in rj.catalogue_matches("2.5.19", cat)
+    assert rj.guide_for("2.3.14")["rules"][0] == "MD-13" and not rj.guide_for("2.3.14")["build"]
+    assert "CS-03" in rj.guide_for("1.2")["rules"]
+    assert "2.5.19" in rj.guide_for("2.3.1")["fix"]

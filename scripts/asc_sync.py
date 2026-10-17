@@ -910,12 +910,12 @@ def plan_review(P):
     if sign_in:
         desired.update(clean({"demoAccountName": private_marker(kit, "demo_user"),
                               "demoAccountPassword": private_marker(kit, "demo_password")}))
-        if "demoAccountName" not in desired:
+        if "demoAccountName" not in desired or "demoAccountPassword" not in desired:
             P.warnings.append("sign-in is required but private.yaml has no demo_user / demo_password")
     if "contactPhone" not in desired:
         P.warnings.append("private.yaml has no review_contact.phone: App Review needs a contact phone")
     if len((desired.get("notes") or "").encode()) > 4000:
-        P.warnings.append("review notes are over 4000 bytes")
+        P.errors.append("review notes are over 4000 bytes")
     cur = live.get("review_detail")
     ch = diff(attrs(cur), desired, private=kit.private)
     if ch:

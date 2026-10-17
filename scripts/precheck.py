@@ -1016,23 +1016,121 @@ def chk_purpose_strings(p, r, opt):
         r.ok("UP-08", "No protected-resource API found in the app code.")
 
 
-PLACEHOLDER_PURPOSE = re.compile(r"^\s*$|\b(todo|tbd|fixme|lorem|placeholder|test)\b|^\$\(PRODUCT_NAME\)|"
-                                 r"^we need (access|permission)\.?$|^(this app|app) (needs|requires) access", re.I)
+PLACEHOLDER_PURPOSE = re.compile(r"^\s*$|\b(todo|tbd|fixme|lorem|placeholder)\b|^\$\(PRODUCT_NAME\)|"
+                                 r"^we need (access|permission)\.?$", re.I)
+
+
+# App Review's purpose-string page (5.1.1(ii)): a text that restates the resource or promises a vague benefit
+# "doesn't meet the requirement". Its own bad examples: "To use location." and "Your data will be used to provide a
+# better experience." Only whole-string restatements fail; a short but specific text is asked about, not failed.
+RESOURCE = (r"(camera|location|microphone|photos?|photo library|contacts|calendars?|reminders|bluetooth|"
+            r"health( data)?|motion|speech recognition|face id|local network|tracking|nfc)")
+VAGUE_PURPOSE = re.compile(r"\bbetter (user )?experience\b|\bimprove (your|the|our) (app )?experience\b|"
+                           rf"^\W*(to |for )?(use|access|using|accessing) (the |your )?{RESOURCE}\W*$|"
+                           rf"^\W*{RESOURCE} (access|usage|permission)\W*$|"
+                           rf"^\W*(this app|the app|app|we) (needs?|requires?) (access to|permission to use) "
+                           rf"(the |your )?{RESOURCE}\W*$", re.I)
+# What's left after removing the vague phrase still names a use ("to show nearby cafes"): asked, not failed.
+SPECIFIC_USE = re.compile(r"(?i)\b(to|so (that )?you can|lets? you|when you|for) (?!(provide|give|offer|deliver|"
+                          r"create|ensure|improve)\b)[a-z]{3,}")
+PURPOSE_HELP = "https://developer.apple.com/help/app-review/guideline-reference/5-1-1-purpose-strings"
+ACCOUNT_DELETION_HELP = "https://developer.apple.com/help/app-review/guideline-reference/5-1-1-account-deletion"
+COMPAT_HELP = "https://developer.apple.com/help/app-review/before-submitting-for-review/test-compatible-devices"
+
+
+def purpose_keys(p):
+    return [k for k in p.info if k.endswith("UsageDescription") or k == "NFCReaderUsageDescription"]
 
 
 @check("UP-09")
 def chk_purpose_quality(p, r, opt):
-    keys = [k for k in p.info if k.endswith("UsageDescription") or k == "NFCReaderUsageDescription"]
+    keys = purpose_keys(p)
     for k in keys:
         v = str(p.info[k] or "")
-        if PLACEHOLDER_PURPOSE.search(v) or len(v.strip()) < 25:
-            r.fail("UP-09", f"{k} is empty, generic or a placeholder: \"{v}\".", [p.info_where.get(k, k)],
+        if PLACEHOLDER_PURPOSE.search(v):
+            r.fail("UP-09", f"{k} is empty or a placeholder: \"{v}\".", [p.info_where.get(k, k)],
                    "Say what the app does with the data and why, with an example (5.1.1(ii)).")
+        elif VAGUE_PURPOSE.search(v.strip()) and not SPECIFIC_USE.search(VAGUE_PURPOSE.sub(" ", v)):
+            r.fail("UP-09", f"{k} restates the resource or promises a vague benefit: \"{v}\".",
+                   [p.info_where.get(k, k)],
+                   "Name the feature the data makes possible, in one active sentence ending with a period, e.g. "
+                   "\"The app uses your location to recommend a route and give turn-by-turn directions.\" "
+                   f"({PURPOSE_HELP})")
         else:
-            r.ok("UP-09", f"{k} has a specific text ({len(v)} characters).")
+            r.ok("UP-09", f"{k} has a text that names more than the resource ({len(v)} characters).")
     if keys:
-        r.ask("UP-09", "Does each purpose string say concretely what the access is used for (with an example)?",
+        loose = [k for k in keys if not str(p.info[k] or "").rstrip().endswith((".", "。", "!", "?", "״", "؟"))]
+        short = [k for k in keys if 0 < len(str(p.info[k] or "").strip()) < 25]
+        r.ask("UP-09", "Does each purpose string say concretely what the access is used for (with an example), in "
+                       "one active sentence ending with a period?" +
+                       (f" Without a closing period: {', '.join(loose)}." if loose else "") +
+                       (f" Short, check they name a feature: {', '.join(short)}." if short else "") +
+                       " A permission an SDK asks for is yours to explain too, or remove the SDK's API use.",
               [f"{k}: {str(p.info[k])[:90]}" for k in keys])
+
+
+STRINGS_ENTRY = re.compile(r'^\s*"?([A-Za-z0-9_.-]+)"?\s*=\s*"((?:[^"\\]|\\.)*)"\s*;', re.M)
+
+
+def _read_strings(f):
+    raw = f.read_bytes()
+    for enc in ("utf-8", "utf-16"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return ""
+
+
+def purpose_translations(p):
+    """{language: {purpose key with a non-empty translation}} from InfoPlist.xcstrings (state other than "new")
+    and <lang>.lproj/InfoPlist.strings."""
+    have = {}
+    for f in p.source_files({".xcstrings"}):
+        if f.name != "InfoPlist.xcstrings":
+            continue
+        try:
+            d = json.loads(f.read_text())
+        except Exception:
+            continue
+        for k, v in (d.get("strings") or {}).items():
+            if not (k.endswith("UsageDescription") or k == "NFCReaderUsageDescription"):
+                continue
+            for lang, loc in ((v or {}).get("localizations") or {}).items():
+                unit = (loc or {}).get("stringUnit") or {}
+                if str(unit.get("value") or "").strip() and unit.get("state") != "new" or loc.get("variations"):
+                    have.setdefault(lang, set()).add(k)
+    for f in p.find("InfoPlist.strings"):
+        if f.parent.suffix == ".lproj" and f.parent.stem != "Base":
+            keys = {k for k, v in STRINGS_ENTRY.findall(_read_strings(f)) if v.strip()}
+            have.setdefault(f.parent.stem, set()).update(keys)
+    return have
+
+
+@check("UP-19")
+def chk_purpose_localized(p, r, opt):
+    keys = purpose_keys(p)
+    app = set(p.languages)
+    if not keys or len(app) < 2:
+        return
+    have = purpose_translations(p)
+    dev = {(p.settings.get("DEVELOPMENT_LANGUAGE") or p.info.get("CFBundleDevelopmentRegion") or "en").split("-")[0]}
+    gaps = {}
+    for l in sorted(app):
+        if l.split("-")[0] in dev:
+            continue
+        done = set().union(*[v for lang, v in have.items() if _lang_supported(l, {lang})] or [set()])
+        miss = [k for k in keys if k not in done]
+        if miss:
+            gaps[l] = miss
+    if gaps:
+        detail = "; ".join(f"{l}: {', '.join(m)}" if len(m) < len(keys) else f"{l}: all" for l, m in gaps.items())
+        r.fail("UP-19", f"The app is localized into {', '.join(sorted(app))}, but some permission prompts are not: "
+                        f"no purpose-string translation for {detail}.", [p.info_where.get(keys[0], keys[0])],
+               "Add an InfoPlist.xcstrings (or <lang>.lproj/InfoPlist.strings) with every *UsageDescription key "
+               f"translated, then check each prompt in that language ({PURPOSE_HELP}).")
+    else:
+        r.ok("UP-19", f"Purpose strings are translated for every app language ({', '.join(sorted(app))}).")
 
 
 @check("UP-10")
@@ -1452,7 +1550,9 @@ def chk_external_payments(p, r, opt):
     hits = p.grep(r"\b(Stripe|PayPal|Braintree|PaymentSheet)\b|license\s*key|promo\s*code|redeem\s*code", re.I)
     if sdks or hits:
         r.ask("PAY-01", "External payment or code-redemption signals found. Do they unlock digital content or "
-                        "features (must use IAP, 3.1.1) or only physical goods/services?",
+                        "features (must use IAP, 3.1.1) or only physical goods/services? Links to another way to pay "
+                        "need an entitlement for that storefront and platform and a permitted destination "
+                        "(3.1.1(a)); the US storefront needs none.",
               [d[2] for d in sdks][:3] + ev(hits, 4))
 
 
@@ -1612,8 +1712,18 @@ def chk_account_deletion(p, r, opt):
     evid = ev(hits, 4) + [d[2] for d in deps][:2]
     if delete or ui:
         r.ok("AC-01", "Account creation found and an account-deletion path exists.")
-        r.ask("AC-01", "Does in-app account deletion fully delete the account (not deactivate) without email/phone "
-                       "steps, and is it easy to find?", ev(delete, 4))
+        siwa = p.grep(r"ASAuthorizationAppleIDProvider|SignInWithAppleButton")
+        subs = any(x.get("type") == "RecurringSubscription" for x in p.storekit["products"]) or \
+            p.grep(r"\bSubscriptionStoreView\b|\bsubscriptionStatus\b|\bautoRenew", re.I)
+        r.ask("AC-01", "Does in-app account deletion fully delete the account and the content the person shared "
+                       "(not deactivate), in every region, for guest accounts too, and is it easy to find? Extra "
+                       "steps only to confirm identity or the decision; customer-service flows only in highly "
+                       "regulated industries. A manual deletion may take reasonable time if the app says how long "
+                       "and confirms when done." +
+              (" Sign in with Apple is used: revoke its tokens on deletion (REST API)." if siwa else "") +
+              (" Subscribers: say that Apple billing continues until they cancel, and link to manage "
+               "subscriptions; deletion scheduled for the subscription's end needs an immediate option beside "
+               "it." if subs else "") + f" ({ACCOUNT_DELETION_HELP})", ev(delete, 4))
     else:
         r.fail("AC-01", "Accounts can be created but no in-app account deletion was found.", evid,
                "Add Settings › Delete Account that deletes the account and its data (5.1.1(v)).")
@@ -1653,7 +1763,9 @@ def chk_login_wall(p, r, opt):
           ev(p.grep(r"\bemail\b", re.I), 3))
     notes = p.kit and any(p.kit.glob("review-notes*"))
     r.ask("AC-07", "Login exists: is there a working demo account in the review notes" +
-          (" (review-notes found in the kit)" if notes else "") + ", and is the backend reachable?", [])
+          (" (review-notes found in the kit)" if notes else "") + ", one per account type (and an account with an "
+          "expired subscription if the app sells one), with any authentication code supplied in advance, and is "
+          "the backend reachable? Username and password both go in App Review Information.", [])
 
 
 @check("AC-06")
@@ -1682,6 +1794,50 @@ def chk_ugc(p, r, opt):
     if hits:
         r.ask("CS-01", "User-generated content or chat found. Are a content filter, Report, Block and published "
                        "contact info all present (1.2)?", ev(hits))
+
+
+# 1.2 (October 16, 2026) names "AI content creation apps" and "nonconsensual intimate imagery": generators are UGC.
+AI_MEDIA = (r"/v1/images/(generations|edits)|\bimages\.(generate|edit)\b|gpt-image|dall-?e|api\.stability\.ai|"
+            r"stability\.ai/v\d|fal\.run|queue\.fal\.run|api\.runwayml\.com|api\.ideogram\.ai|api\.bfl\.ai|"
+            r"cloud\.leonardo\.ai|api\.lumalabs\.ai|/v1/videos\b|\bsora-\d|imagen-\d|veo-\d|"
+            r"\bImagePlaygroundViewController\b|\.imagePlaygroundSheet\b|\bImageCreator\b")
+NUDIFY = (r"(?i)\b(nudif(y|ier|ication)|deep-?nude|undress(ing|er)?\s+(ai|app|anyone|people|her|him|them|photos?|"
+          r"images?|pics?)|remove\s+(her|his|their)\s+cloth(es|ing)|see\s+(anyone|people|through)\s+\w*\s*"
+          r"(without\s+)?cloth(es|ing)|x-?ray\s+(vision|filter)\s+(app|camera|photo))\b")
+AI_TEXT = (r"\bLanguageModelSession\b|api\.openai\.com/v1/(chat/completions|responses)|/v1/messages\b|"
+           r"api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.mistral\.ai|api\.groq\.com|"
+           r"\bOpenAI\(|\bAnthropic\(|\bGenerativeModel\(")
+# A nudify word next to these is a refusal, a denylist or a moderation rule, not the feature.
+MODERATION = re.compile(r"(?i)blocklist|blocked|deny|denied|\bban(ned)?\b|forbid|reject|moderat|refus|not allowed|"
+                        r"prohibit|unsafe|violat")
+AI_SAFETY_HELP = "https://developer.apple.com/news/?id=vvzx6cul"
+
+
+@check("CS-03")
+def chk_ai_generation(p, r, opt):
+    nude = p.grep(NUDIFY)
+    feature = [l for l in nude if not MODERATION.search(l.text)]
+    if feature:
+        r.fail("CS-03", "Code or strings describe undressing or nudifying people. Apps that generate sexually "
+                        "explicit images of real people are prohibited (1.1.4, 1.2), and hiding it from review is "
+                        "2.5.19.", ev(feature), "Remove the feature; it cannot pass review.", severity="BLOCKER")
+    elif nude:
+        r.ask("CS-03", "Nudify or undress wording appears next to moderation words (block, deny, filter, refuse). "
+                       "Is it only a denylist or a refusal message, never something the app can do?", ev(nude))
+    gen = p.grep(AI_MEDIA, re.I)
+    if gen:
+        r.ask("CS-03", "AI image or video generation found. Since October 16, 2026, guideline 1.2 covers AI content "
+                       "creation apps: is generated output filtered before it is shown or shared (no sexual or "
+                       "intimate imagery of real people, including uploaded photos of others), can people report "
+                       "output and block abusive accounts, and is contact info published? Do the age-rating answers "
+                       f"reflect what the model can produce? ({AI_SAFETY_HELP})", ev(gen))
+    text = p.grep(AI_TEXT)
+    if text:
+        r.ask("CS-03", "Generative text found (on-device or a hosted model). If people can create, generate or share "
+                       "content with it, 1.2 applies: filter harmful output, let people report it, act on reports, and "
+                       "publish contact info. Is the age rating set for what the model can say, and is a third-party "
+                       f"AI service disclosed with consent before personal data goes to it (5.1.2(i))? ({AI_SAFETY_HELP})",
+              ev(text))
 
 
 ADS_RX = r"\b(GADBannerView|BannerView|InterstitialAd|GADInterstitialAd|RewardedAd|NativeAd|GADNativeAd|MAAdView)\b"
@@ -2017,8 +2173,10 @@ def chk_ipad_full_screen(p, r, opt):
 def chk_iphone_only(p, r, opt):
     fam = p.settings.get("TARGETED_DEVICE_FAMILY", "1")
     if "2" not in fam:
-        r.ask("DF-12", "iPhone-only app: reviewers may run it on iPad in compatibility mode. Does every screen "
-                       "work there (2.4.1)?", ev(p.grep(r"userInterfaceIdiom\s*==\s*\.pad"), 3))
+        r.ask("DF-12", "iPhone-only app: it also runs on iPad in compatibility mode, and on Apple silicon Macs and "
+                       "Apple Vision Pro unless you remove those destinations. Does every screen work there (2.4.1)? "
+                       "Use UIRequiredDeviceCapabilities only for hardware the app can't work without "
+                       f"({COMPAT_HELP}).", ev(p.grep(r"userInterfaceIdiom\s*==\s*\.pad"), 3))
 
 
 @check("DF-13")
@@ -2091,6 +2249,66 @@ def chk_js_bridges(p, r, opt):
     if hits:
         r.ask("DF-23", "Native APIs are exposed to web content via script message handlers. Can downloaded code "
                        "reach camera/location/contacts without per-use consent (4.7)?", ev(hits))
+
+
+OBFUSCATORS = {"SwiftShield": ("swiftshield", "SwiftShield"), "iXGuard": ("ixguard", "iXGuard"),
+               "Obfuscator-LLVM": ("obfuscatorllvm", "OLLVM"), "Hikari": ("hikari", "Hikari"),
+               "swift-confidential": ("swiftconfidential", "ConfidentialKit")}
+OLLVM_FLAGS = re.compile(r"-mllvm\s+-(fla|bcf|sub|split|sobf|enable-(cffobf|bcfobf|subobf|strcry|indibran|fco))\b")
+FLAG_SDKS = {"Firebase Remote Config": ("firebaseremoteconfig", "FirebaseRemoteConfig"),
+             "LaunchDarkly": ("launchdarkly", "LaunchDarkly"), "Statsig": ("statsig", "Statsig"),
+             "ConfigCat": ("configcat", "ConfigCat"), "Optimizely": ("optimizely", "Optimizely"),
+             "GrowthBook": ("growthbook", "GrowthBook"), "Unleash": ("unleash", "UnleashProxyClientSwift"),
+             "Flagsmith": ("flagsmith", "FlagsmithClient"), "Split": ("splitio", "Split"),
+             "Amplitude Experiment": ("experimentiossdk", "Experiment")}
+# Code that behaves differently for App Review or flips on at a date: the bait-and-switch pattern 2.5.19 names.
+# Strong names fail; generic ones (a review mode in a reviews app, a document under review) are asked about.
+REVIEW_SNIFF = (r"(?i)\b(is_?in_?app_?review|is_?apple_?review(er)?|apple_?review(er)?|app_?review_?mode|"
+                r"hide_?for_?review|for_?app_?review|is_?app_?store_?review(er)?)\b")
+REVIEW_SNIFF_WEAK = r"(?i)\b(is_?in_?review|is_?reviewer|review_?mode|review_?build|under_?review)\b"
+SANDBOX_SNIFF = r"\bsandboxReceipt\b|\.environment\s*==\s*\.(sandbox|xcode)\b"
+DATE_GATE = (r"(?i)Date\(\)\s*[<>]=?\s*\w*(launch|release|unlock|activat|go_?live|enable|reveal|switch)\w*|"
+             r"timeIntervalSince1970\s*[<>]=?\s*\d{9,}|Date\(timeIntervalSince1970:\s*\d{9,}\)\s*[<>]")
+HIDDEN_HELP = "https://developer.apple.com/help/app-review/safe-and-trusted-store/app-removals"
+
+
+@check("DF-24")
+def chk_hidden_features(p, r, opt):
+    obf = sdk_present(p, OBFUSCATORS)
+    flags = [k for k, v in p.settings.items() if k.startswith("OTHER_") and OLLVM_FLAGS.search(str(v))]
+    sniff = p.grep(REVIEW_SNIFF)
+    weak = [l for l in p.grep(REVIEW_SNIFF_WEAK) if l not in sniff]
+    sandbox = p.grep(SANDBOX_SNIFF)
+    dated = p.grep(DATE_GATE)
+    remote = sdk_present(p, FLAG_SDKS)
+    if sniff:
+        r.ask("DF-24", "Code names App Review (apple reviewer, app review mode, hide for review). Read what it does: "
+                       "a documented, fully featured demo mode for the reviewer is fine, but showing the reviewer a "
+                       "different app is a hidden feature under 2.5.19 (removal from the App Store and the "
+                       "Developer Program). Give the reviewer the same app users get.", ev(sniff))
+    if weak:
+        r.ask("DF-24", "Names like review mode or is-reviewer found. Do they belong to a feature of the app (a "
+                       "documented demo mode, reviews, a document under review), never to detecting App Review "
+                       "(2.5.19)?", ev(weak))
+    if sandbox:
+        r.ask("DF-24", "The code checks for the sandbox environment, which is what App Review runs in. Is it only "
+                       "used to pick the receipt or transaction endpoint, never to change features or content?",
+              ev(sandbox))
+    if obf or flags:
+        r.ask("DF-24", "Code obfuscation is used (" + ", ".join(sorted(obf) + flags) + "). Obfuscating secrets "
+                       "is fine, but 2.5.19 names obfuscation used to hide undocumented features as grounds for "
+                       "removal and account termination: does every feature in the binary show up in review and "
+                       "in the review notes?", sum(obf.values(), []) + flags)
+    if dated:
+        r.ask("DF-24", "Date-based switches found. Does any of them turn on a feature after approval that the "
+                       "reviewer couldn't see? That is the bait-and-switch 2.5.19 removes apps for.", ev(dated))
+    if remote:
+        r.ask("DF-24", "Remote feature flags (" + ", ".join(sorted(remote)) + "). Is every feature a flag can "
+                       "turn on already in this build, reachable by the reviewer, and described in the review "
+                       "notes? Enabling a violating feature server-side after approval gets the app removed "
+                       f"({HIDDEN_HELP}).", sum(remote.values(), []))
+    if not (obf or flags or sniff or weak or sandbox or dated or remote):
+        r.ok("DF-24", "No obfuscation, review detection, date switches or remote feature flags found.")
 
 
 # --------------------------------------------------------------------------- G. metadata

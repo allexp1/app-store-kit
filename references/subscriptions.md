@@ -77,6 +77,11 @@ in the app, and reviewer instructions that explain how to reach it. Test purchas
 in sandbox/TestFlight, and ensure the paid agreement, tax and banking are ready. Store availability
 is a separate browser step; this script does not set availability or verify the purchase implementation.
 The screenshot path must be an existing PNG/JPEG within KIT; image dimensions/content still need review.
+App Review tests purchases in the same sandbox ([Configure In-App Purchases for review](https://developer.apple.com/help/app-review/before-submitting-for-review/configure-in-app-purchases), read 2026-10-17):
+the Paid Apps Agreement must be **in effect** (paid purchases don't work in review before that); fetch products
+with StoreKit before showing them so the paywall matches App Store Connect (no hard-coded prices); if purchases are
+limited by storefront or device, say so in the review notes; in-app purchases don't need prior approval to work in
+review. Give the reviewer an account with an expired subscription as well as the demo account (complete-review).
 See [Offer subscriptions](https://developer.apple.com/help/app-store-connect/manage-subscriptions/offer-auto-renewable-subscriptions/)
 and [Submit an In-App Purchase](https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-in-app-purchase/).
 

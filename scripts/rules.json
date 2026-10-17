@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "fetched": "2026-10-14",
+  "fetched": "2026-10-17",
   "note": "Baseline snapshot shipped with the skill. A kit must freeze its own copy (snapshot_rules.py) right before submission and validate against that copy.",
   "sources": [
     {
       "id": "screenshots",
       "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
-      "text_sha256": "9735029480c3971c7e0f2cf829f2ed39f50067a618ce09573bb325debc8032ad"
+      "text_sha256": "b71dea1cc7d2295478c0ed9cfc7383e1342808368e32968902454d19941d04a7"
     },
     {
       "id": "previews",
@@ -31,7 +31,7 @@
     {
       "id": "review-guidelines",
       "url": "https://developer.apple.com/app-store/review/guidelines/",
-      "text_sha256": "4757c78422154f6dba5cf35af2a90cf427e5b7c56e974238344df717cb9eb93f"
+      "text_sha256": "13bea4397e4204cb0455b63b84aaa122422ede258cba0351c64b52ae2c19448d"
     },
     {
       "id": "privacy-details",
@@ -47,6 +47,36 @@
       "id": "product-page",
       "url": "https://developer.apple.com/app-store/product-page/",
       "text_sha256": "30f6add6b8179f00435d89bffe2855490dc83effaa42d32c91fc8eb4036d6d8f"
+    },
+    {
+      "id": "asset-best-practices",
+      "url": "https://developer.apple.com/app-store/asset-best-practices/",
+      "text_sha256": "8e81301fd807e050a404c453be1f6a1933355052891913d5bafb200fb758fa6e"
+    },
+    {
+      "id": "review-help-complete-review",
+      "url": "https://developer.apple.com/help/app-review/before-submitting-for-review/complete-review",
+      "text_sha256": "ff1536040f9cb4a54fa83c9fc253725fa6fa023e8fb246da75db60d3ebf87874"
+    },
+    {
+      "id": "review-help-screenshots",
+      "url": "https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots",
+      "text_sha256": "cdd6bb663b3bac43aa7b874ab0ecec4321736c27693de9e9271673253c9bab4a"
+    },
+    {
+      "id": "review-help-purpose-strings",
+      "url": "https://developer.apple.com/help/app-review/guideline-reference/5-1-1-purpose-strings",
+      "text_sha256": "c042fff3c9871e91e9cc099f14249423df66a72bdc11ee4ab5c59d89b332e30c"
+    },
+    {
+      "id": "review-help-account-deletion",
+      "url": "https://developer.apple.com/help/app-review/guideline-reference/5-1-1-account-deletion",
+      "text_sha256": "3e93de84b457148d1c19ad42b9483176018879a06fec7d616ae4fd3bd00ff42a"
+    },
+    {
+      "id": "review-help-app-removals",
+      "url": "https://developer.apple.com/help/app-review/safe-and-trusted-store/app-removals",
+      "text_sha256": "916c79f2df9eda115ad8186536528b783bc39eb7872ef5234c707167dd9660fa"
     }
   ],
   "screenshots": {

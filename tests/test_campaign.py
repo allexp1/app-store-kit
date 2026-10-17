@@ -735,3 +735,60 @@ def test_new_engines_render_clean(tmp_path, name):
     r = _run("render", p, "--engine", name, "--out", out, "--offline")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "0 error(s)" in r.stdout
+
+
+# --- 2.3.3: more than half of the set shows the app in use (App Review help, October 2026) -----------------
+
+def in_use_error(issues):
+    return [m for lvl, _, m in issues if lvl == "error" and m.startswith("2.3.3")]
+
+
+def test_half_type_only_panels_fail_2_3_3(tmp_path, rules):
+    sp = S.load(make_campaign(tmp_path, panels=4))
+    for p in sp["storyboard"][2:]:
+        p.pop("screen")
+        p["no_screen"] = True
+    msg = in_use_error(S.validate(sp, rules))
+    assert msg and "only 2 of 4" in msg[0] and "3, 4" in msg[0]
+    sp["storyboard"][2]["screen"], sp["storyboard"][2]["no_screen"] = "s3", False
+    assert in_use_error(S.validate(sp, rules)) == []        # 3 of 4 is a majority
+
+
+def test_login_and_splash_screens_do_not_count(tmp_path, rules):
+    sp = S.load(make_campaign(tmp_path, panels=3))
+    sp["screens"]["login"] = sp["screens"].pop("s1")
+    sp["screens"]["s2"] = "screens/splash.png"
+    sp["storyboard"][0]["screen"] = "login"
+    assert S.in_use_panels(sp) == {3}
+    assert in_use_error(S.validate(sp, rules))
+
+
+def test_layers_decide_in_use_and_a_spread_phone_counts_twice(tmp_path):
+    sp = S.load(make_campaign(tmp_path, panels=3))
+    sp["layers"] = [{"type": "device", "screen": "s1", "x": 1.0, "w": 0.8},     # straddles panels 1 and 2
+                    {"type": "text", "panel": 3, "text": "Hi"}]
+    assert S.in_use_panels(sp) == {1, 2}
+    sp["layers"][0]["x"] = 0.5
+    assert S.in_use_panels(sp) == {1}
+
+
+def test_every_engine_keeps_a_majority_in_use(tmp_path):
+    for n in (3, 4, 7, 10):
+        (tmp_path / str(n)).mkdir()
+        path = make_campaign(tmp_path / str(n), panels=n)
+        for name in engines.ENGINES:
+            sp = S.load(path)
+            sp["layers"] = engines.generate(sp, name)["layers"]
+            assert 2 * len(S.in_use_panels(sp)) > n, (name, n)
+
+
+def test_explicit_text_only_layers_do_not_fall_back_to_the_storyboard(tmp_path):
+    sp = S.load(make_campaign(tmp_path, panels=3))
+    sp["layers"] = [{"type": "text", "x": 0.5}]
+    assert S.in_use_panels(sp) == set()
+
+
+def test_folder_names_do_not_decide_in_use(tmp_path):
+    sp = S.load(make_campaign(tmp_path, panels=3))
+    sp["screens"]["s1"] = "screens/launch/home.png"
+    assert 1 in S.in_use_panels(sp)

@@ -1,7 +1,7 @@
 # App Review rejections: how they arrive, what to do, what the API can see
 
-Researched 2026-10-15 against Apple's App Review page, the App Review Guidelines (Last Updated June 8, 2026), the
-App Review and App Store Connect Help, and the App Store Connect API **4.5.1** OpenAPI spec (file dated 2026-10-06).
+Researched 2026-10-15 and updated 2026-10-17 against Apple's App Review page, the App Review Guidelines (Last Updated
+October 16, 2026), the App Review and App Store Connect Help, and the App Store Connect API **4.5.1** OpenAPI spec (file dated 2026-10-06).
 The script is `scripts/rejection.py` (`status`, `triage`, `record`); the reply blocks are
 `templates/rejection-reply.example.md`.
 
@@ -13,6 +13,12 @@ Sources (all read 2026-10-15):
 - **CONTACT**: Contact App Review for help with a submission: https://developer.apple.com/help/app-review/after-submitting-for-review/contact-app-review
 - **APPEAL**: Appeal to the App Review Board: https://developer.apple.com/help/app-review/after-submitting-for-review/appeal-to-the-app-review-board (form: https://developer.apple.com/contact/app-store/?topic=appeal)
 - **BUGFIX**: Accept Bug Fix Submission offers: https://developer.apple.com/help/app-review/after-submitting-for-review/bug-fix-submissions
+- **EXPEDITE**: Request an expedited review: https://developer.apple.com/help/app-review/after-submitting-for-review/request-expedited-review
+- **REMOVALS**: Respond to an app removal: https://developer.apple.com/help/app-review/safe-and-trusted-store/app-removals
+- **ASI**: App Store Improvements: https://developer.apple.com/help/app-review/safe-and-trusted-store/app-store-improvements
+- **REPORT**: Report an app: https://developer.apple.com/help/app-review/safe-and-trusted-store/report-an-app
+- **MEET**: App Review appointments: https://developer.apple.com/help/app-review/before-submitting-for-review/app-review-appointment
+- **IMPROVE**: Suggest a guideline change: https://developer.apple.com/help/app-review/after-submitting-for-review/improve-guidelines
 - **STATUS**: Track a submission's review status: https://developer.apple.com/help/app-review/after-submitting-for-review/review-status
 - **STATES**: App and submission statuses: https://developer.apple.com/help/app-store-connect/reference/app-information/app-and-submission-statuses
 - **UNRESOLVED**: Manage a submission with unresolved issues: https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/manage-a-submission-with-unresolved-issues
@@ -94,7 +100,7 @@ Rejected (email / status shows UNRESOLVED_ISSUES)
 │
 └─ You believe the app follows the guideline and a reply didn't settle it?
       → appeal to the App Review Board (APPEAL): reply in App Store Connect first; one appeal per rejected
-        submission, all guidelines in it; point by point how the app meets each; up to five apps per form.
+        or removed app, all guidelines in it; point by point how the app meets each; up to five apps per form.
         Don't appeal for information requests or after resubmitting (resubmitting closes the appeal, STATUS).
 ```
 
@@ -104,7 +110,8 @@ to `rejections:` in `connect-progress.yaml`; connect_guide.py reads only `steps:
 ## 4. Replies: what Apple wants
 
 - Do: be specific (the feature, guideline or step); add information when the app was misunderstood (CONTACT).
-- Don't: appeal or ask for an expedited review in the reply field; ask about other developers' apps (CONTACT).
+- Don't: appeal or ask for an expedited review in the reply field; ask how other developers' apps were reviewed (CONTACT). Raising a concern about another app is
+  fine, in the reply or with the Report an app form; App Review won't share the outcome (REPORT).
 - The field takes **4000 characters**; files can be attached (screenshots, documents) "until you resubmit"
   (REPLY). Roles that can reply: Account Holder, Admin, App Manager (REPLY).
 - A call with an Apple representative can be requested in the same window after App Review replied; give a time
@@ -121,8 +128,22 @@ to `rejections:` in `connect-progress.yaml`; connect_guide.py reads only `steps:
 | Repeated rejection for the same guideline, or manipulation | "review of your app will take longer" | GL |
 | Call with App Review | 3 to 5 business days | CONTACT |
 | Appeal | No time given; the Board answers in App Store Connect and may ask for a call | APPEAL |
-| Expedited review | Only for a critical bug fix (steps to reproduce on the live version) or a dated event; https://developer.apple.com/contact/app-store/?topic=expedite | AR, GL |
+| Expedited review | Only after the app is submitted, and only for genuine urgency: a critical bug fix (steps to reproduce on the live version) or a dated event (the event, its date and the app's link to it). Put the reason in the review Notes, then use the form: https://developer.apple.com/contact/app-store/?topic=expedite | AR, GL, EXPEDITE |
+| Removal of a live app, less severe issue | 14 days to submit a compliant update, else removed | REMOVALS |
+| Removal, serious issue (safety, legal) | May be immediate; a compliant update restores it | REMOVALS |
+| Removal, incompatible concept | Immediate and final: only a new app with a compatible concept | REMOVALS |
+| App Store Improvements notice (no update in 3 years and almost no downloads in 12 months) | 90 days to update, else removed until an update is approved; the name stays yours and current users keep the app | ASI |
 | After approval | Up to 24 hours to appear on every storefront | GL |
+
+## 5a. Removals, appointments and feedback
+
+- A live app can be removed for hidden features or a change after approval "such as through a server-side change",
+  for issues users report, or for legal, IP or government takedowns. The message in App Store Connect names the
+  rules; reply to it with questions or information, or appeal (one appeal per removed app) (REMOVALS, APPEAL).
+- Before submitting, a 30-minute App Review appointment over Webex can be booked (Tuesdays and Thursdays, local
+  business hours). It is advice only: it doesn't replace, expedite or guarantee a review (MEET).
+- Another app breaking the rules: Report an app form, or mention it in a reply you are already exchanging with App
+  Review (REPORT). A guideline you think should change: the feedback form, up to five guidelines (IMPROVE).
 
 ## 6. Common guidelines and their usual fix
 
@@ -137,13 +158,15 @@ number (2.1 matches 2.1(a) and 2.1(b); 5.1.1(v) matches 5.1.1 but not 5.1.1(vii)
 | 2.1 Information Needed | Reviewer has questions | Answer them in a reply | No | — |
 | 2.1(b) | Purchase not found or not working | Submit the purchase with the version; working in sandbox; say where the paywall is | Usually | PAY-03, PAY-01, UP-15 |
 | 2.2 | Beta or debug wording | Remove it | Yes | DF-03 |
-| 2.3 / 2.3.1 | Metadata doesn't match the app; hidden features | Match the texts to the build; describe every feature in the review notes | 2.3 no / 2.3.1 yes | MD-06, PR-03 |
+| 2.3 / 2.3.1 | Metadata doesn't match the app or misleads; What's New not specific | Match the texts to the build; describe changes with specificity | No (metadata) | MD-06, PR-03 |
+| 2.5.19 | Hidden, dormant or undocumented features (until Oct 16, 2026 this was 2.3.1(a); older messages still cite 2.3.1) | Remove the switch or document the feature in the review notes and keep it reachable | Yes | DF-24, MD-06 |
+| 2.3.14 | Creative assets (header, search) with prices, misleading references or unverifiable claims | Redo the asset; `render_creative.py` lints it | No | MD-13, MD-05 |
 | 2.3.3 Screenshots | Not the app in use; stretched iPhone shots as iPad | New screenshots from the build for every flagged size and language | No | MD-04, MD-08 |
 | 2.3.7 | Prices, other apps or keyword stuffing in name/subtitle/keywords | Rewrite the field | No | MD-01, MD-03 |
 | 2.3.10 | Other platforms named | Remove | No | MD-02 |
 | 2.3.12 | Generic What's New for a big change | List the changes | No | MD-07 |
 | 2.5.1 | Private API or off-purpose framework | Replace it | Yes | UP-16, DF-22 |
-| 3.1.1 In-App Purchase | Digital unlock outside IAP, external buy links, no Restore | IAP for digital goods; Restore Purchases; remove the links | Yes | PAY-01, PAY-02, PAY-11 |
+| 3.1.1 In-App Purchase | Digital unlock outside IAP, external buy links, no Restore | IAP for digital goods; Restore Purchases; remove the links, unless the storefront and platform allow them with an entitlement and the link goes to a permitted destination (3.1.1(a)) | Yes | PAY-01, PAY-02, PAY-11 |
 | 3.1.2 | Paywall lacks price, period, terms links | Add them | Yes | PAY-04 … PAY-07 |
 | 4.0 Design | Broken layout on a device class | Fix the screen Apple shows | Yes | DF-11, DF-12, DF-20 |
 | 4.2 | Repackaged website, too little function | Native features | Yes | DF-06 |
@@ -152,7 +175,8 @@ number (2.1 matches 2.1(a) and 2.1(b); 5.1.1(v) matches 5.1.1 but not 5.1.1(vii)
 | 5.1.1 | Privacy policy missing in app or Connect; vague purpose strings | Link the policy; rewrite purpose strings | Yes | PR-01, PR-02, UP-09, AC-05 |
 | 5.1.1(v) Account Sign-In | No in-app account deletion; login not needed | Delete Account inside the app (revoke Sign in with Apple tokens); no forced login | Yes | AC-01, AC-04, AC-02 |
 | 5.1.2 | Tracking without ATT; label mismatch; third-party AI not disclosed | ATT before tracking; fix the label; consent | Yes | PR-04, PR-03, PR-08 |
-| 1.2 | User content without report/block | Add filter, report, block, contact | Yes | CS-01 |
+| 1.2 | User content (including AI-generated) without filter, report or block; nonconsensual intimate imagery | Add filter, report, block, contact; act on reports. Ignoring violations after notice may breach the Developer Code of Conduct | Yes | CS-01, CS-03 |
+| 4.1 | Copycat | A distinct concept (a rename isn't enough), accurate developer name, your own support URL | Yes | DF-21 |
 | 5.2 | Third-party IP | Remove, or attach proof of rights to the reply | Yes or reply | CS-11, DF-21 |
 
 ## 7. Things not confirmed

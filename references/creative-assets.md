@@ -65,7 +65,11 @@ relate to what the app does.
   or marketplaces' logos, Apple recognitions (Editor's Choice, App of the Day, Game of the Day, Apple Design
   Award), anything above 4+; in games, gore or weapons pointed at a person or the viewer. Guideline 2.3 and
   Apple's Advertising Policies apply.
-- The same review rules as screenshots: what is shown must be in the app.
+- Guideline **2.3.14** (Oct 16, 2026) makes these rules binding: the asset must "pertain to your app's content and
+  functionality or overarching brand", so brand, seasonal or new in-app content is fine, but nothing that misleads
+  about what the app is. `render_creative.py` lints the asset text before rendering and stops (exit 2) on prices,
+  discounts, URLs, ©, other platforms or Apple recognitions; rankings, user counts, ratings or awards need
+  `--evidence FILE`.
 
 ## Making it
 

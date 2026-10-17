@@ -199,6 +199,12 @@ left for RTL), `store-preview.png`, `report.md` and `source/` (scene.html, layou
 
 Errors block `--install`; warnings are for Claude and the owner to judge.
 
+Before anything renders, the spec check (`studio/spec.py`, run by `campaign.py`) refuses a set where **half or fewer**
+of the panels show the app in use: Apple approves screenshots only when more than half of them, per device type and
+language, show the app in use (2.3.3, [help](https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots)).
+A panel counts when a device or card covers at least a fifth of it with a real screen; login, sign-in, sign-up,
+splash, launch, title or welcome screens don't count. A phone that spans two panels counts for both.
+
 | Error | Warning |
 |---|---|
 | text crossing a panel seam | text inside the safe margins |

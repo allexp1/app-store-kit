@@ -106,6 +106,8 @@ This skill has a `.living/` sidecar. Before using it, read `.living/PROTOCOL.md`
    - Only the app's UI and a generated, provenance-tracked sample library go out.
    - If a capture shows real personal content, discard it.
 3. **Screens come from the real build being submitted** (2.3.3), rendered by the app at native size. Never redraw or mock a screen.
+   - Apple approves a set only when **more than half** of the screenshots, per device type and language, show the app in use (3 need 2, 4 need 3); login, sign-in and splash screens don't count. `studio/spec.py` makes this an error; the house default is a real screen on every panel.
+   - No hidden, dormant or undocumented features (2.5.19, Oct 16, 2026): never add a review-only switch, a date gate or a remote flag that turns on something the reviewer didn't see. Hiding features, including by obfuscation, is grounds for removal and account termination.
    - Screenshot "scenes" (DEBUG launch arguments) only stage sample content. They never unlock features or fake results.
 4. **Validate against the kit's frozen rules,** not memory: `KIT/rules.json`, frozen by `snapshot_rules.py freeze KIT` right before submission.
    - Apple rules are errors.
@@ -169,8 +171,8 @@ kit/release-history.yaml       version, build, date and commit of each release (
 - Then read the code for every item under "For Claude to judge" and under "Not scanned", and decide each one, with
   the evidence. Record each decision in `KIT/precheck-decisions.yaml` (`{id: {decision: ok|fixed|n/a, why}}`); the
   pre-check isn't clean while any stay undecided.
-- The rules come from `references/precheck-rules.md` (Apple's guidelines of June 8, 2026, the upload requirements and
-  the privacy-manifest rules). Refresh it with the living knowledge when it is older than 7 days.
+- The rules come from `references/precheck-rules.md` (Apple's guidelines of October 16, 2026, App Review Help, the upload
+  requirements and the privacy-manifest rules). Refresh it with the living knowledge when it is older than 7 days.
 - Blockers stop the journey. Fix them in the code (with the owner's go-ahead), or explain why one doesn't apply.
   Rejection risks go to the owner as plain questions.
 
@@ -191,8 +193,8 @@ kit/release-history.yaml       version, build, date and commit of each release (
 - Draft:
   - privacy-label answers per data type (`references/privacy-labels.md`). Read the archive's **Xcode › Organizer › Generate Privacy Report**, because SDK manifests count;
   - `connect.yaml`: age-rating answers, content rights, export compliance, availability, release option and the other non-metadata answers (see `references/app-store-connect-fields.md`);
-  - review notes (template in `references/review-guidelines.md`), which describe the **release-build** path to sample content and the sandbox purchase.
-- Review notes describe each feature specifically: generic notes are rejected under 2.3.1(a).
+  - review notes (13-item template in `references/review-guidelines.md`, from Apple's "Provide information for a complete review"), which describe the **release-build** path to sample content and the sandbox purchase: what the app is or what changed and where, devices and OS tested, regional differences, external services, demo accounts per account type (and an expired subscription), regulated-field documents.
+- Review notes describe each change specifically (2.3.1(a)). `lint_metadata.py` warns (MD-14) when the notes seem to miss an item and fails over 4000 bytes.
 - The human approves the copy.
 
 **4. Story.**
@@ -252,6 +254,8 @@ Always strip alpha afterwards. Keep the other renderer as a cross-check.
 - the IAP promo image;
 - the header and search-results asset (`references/creative-assets.md`): one 5244×2950 universal PNG, key content
   in Apple's art safe area, rendered with `scripts/render_creative.py` from `templates/creative-universal.html`.
+  Guideline 2.3.14 (Oct 16, 2026) governs it: the render stops on prices, discounts, URLs or other apps in its text,
+  and claims (rankings, ratings, awards) need `--evidence FILE`.
   Optional, but easy to forget: App Store Connect shows "0 of 1 Header Asset", and on a first release it must go in
   the same submission as the version. The status board lists it under "Before you submit"; ask the owner;
 - the website App Store badge (Apple's artwork, black by default, at least 40 px high) and the Smart App Banner once the app has an ID;
@@ -537,7 +541,7 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/lint_metadata.py` | limits (chars or bytes as Apple counts them), keyword hygiene, prices, trademarks, other platforms, unbacked claims, URLs |
 | `scripts/validate_kit.py` | asset validation against the frozen `rules.json`; `--fix` strips alpha; `--report` writes the missing-per-locale table |
 | `scripts/preview_check.py` | ffprobe checks for app previews |
-| `scripts/render_creative.py` | `HTML --out PNG [--kind universal\|header\|search] [--set NAME=FILE] [--guides JPG]`: header / search-results asset, RGB, plus a preview with Apple's safe areas |
+| `scripts/render_creative.py` | `HTML --out PNG [--kind universal\|header\|search] [--set NAME=FILE] [--guides JPG] [--evidence FILE]`: header / search-results asset, RGB, plus a preview with Apple's safe areas; exit 2 when the text breaks 2.3.14 |
 | `scripts/connect_guide.py` | `KIT` → `CONNECT-GUIDE.md` + `connect-guide.html` (+ `connect-guide.private.html` when `private.yaml` exists); reads `connect-progress.yaml`; `--check` lists steps needing update; `--init-progress`; exit 1 on a text over its limit |
 | `scripts/precheck.py` | `PROJECT [--kit KIT] [--json] [--strict] [--check-urls]`: the code against Apple's rules (`references/precheck-rules.md`) → `KIT/PRECHECK.md`; exit 2 blocker, 1 likely rejection, 0 otherwise; Semi checks go to "For Claude to judge", unscanned ones to "Not scanned"; reads `precheck-decisions.yaml` |
 | `scripts/status_board.py` | `KIT [--project DIR] [--print]` → `KIT/STATUS.md` from progress, PRECHECK.md, connect-plan.json and connect-live.json; the "Next" line; "Before you submit" (watch screenshots, header asset) |
@@ -565,7 +569,7 @@ Run the tests with `python3 -m pytest` in this folder.
 
 - `references/apple-specs.md`: sizes, limits, badge rules, with Apple URLs
 - `references/app-store-connect-fields.md`: every App Store Connect screen and field in visiting order, with limits, answer choices, the age-rating questionnaire and what's unverified
-- `references/review-guidelines.md`: 2.1, 2.3.x, 3.1.1, 4, 5.1.1, 5.1.2, 5.2, and the review-notes template
+- `references/review-guidelines.md`: the October 16, 2026 guidelines (1.2 AI content, 2.1, 2.3.x incl. 2.3.14, 2.5.19, 3.1.1(a), 4, 5.1.1, 5.1.2, 5.2), App Review Help facts and the review-notes template
 - `references/privacy-labels.md`: definitions, the per-data-type method, the AdMob/UMP example
 - `references/copy.md`: name, subtitle and keyword strategy; localization
 - `references/story.md`: frame patterns, caption rules, the dark frame

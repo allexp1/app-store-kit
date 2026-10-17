@@ -53,6 +53,10 @@ STORE_FORBIDDEN = [
     (r"©|\(c\)", "© marks are not allowed"),
     (r"(?i)google play|android|play store", "other platforms are not allowed"),
 ]
+# App Review's 2.3.3 help page: a set is approved only when more than half of its screenshots show the app in use,
+# and a login page or splash screen alone doesn't count. Screens whose id or file says so are not "in use".
+NOT_IN_USE = re.compile(r"(?i)(^|[^a-z])(log-?in|sign-?in|sign-?up|splash|launch|title|welcome)([^a-z]|$)")
+IN_USE_HELP = "https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots"
 
 
 class SpecError(Exception):
@@ -172,6 +176,39 @@ def check_copy(text: str, where: str, evidence: str | None, issues: list):
                                                 "ratings or awards; add the source or drop the claim"))
 
 
+def _shows_use(spec: dict, sid) -> bool:
+    if not sid or sid not in spec["screens"]:
+        return False
+    s = spec["screens"][sid]
+    files = [s] if isinstance(s, str) else [str(v) for v in s.values()]
+    # The screen's id and file names only (a folder called launch/ says nothing); one in-use file is enough.
+    names = [pathlib.PurePath(f).stem for f in files]
+    return not NOT_IN_USE.search(str(sid)) and not all(NOT_IN_USE.search(n) for n in names)
+
+
+def in_use_panels(spec: dict) -> set:
+    """1-based panels that show the app in use (guideline 2.3.3). With layers: a device or UI card of a real,
+    non-login screen covers at least a fifth of the panel's width (a phone spread across two panels counts for both,
+    as Apple allows). Without layers: the storyboard names such a screen and the panel isn't no_screen."""
+    n = spec["campaign"]["panels"]
+    layers = spec.get("layers")
+    shown = [L for L in list(layers or []) + list(spec.get("extra_layers") or [])
+             if L.get("type") in ("device", "card")]
+    if layers is None and not shown:
+        return {i for i, p in enumerate(spec["storyboard"], 1) if not p.get("no_screen") and
+                any(_shows_use(spec, sid) for sid in [p.get("screen")] + list(p.get("screens") or []))}
+    out = set()
+    for L in shown:
+        if not _shows_use(spec, L.get("screen")):
+            continue
+        half = float(L.get("w", 0.78 if L["type"] == "device" else 0.6)) / 2
+        x0, x1 = float(L.get("x", 0)) - half, float(L.get("x", 0)) + half
+        for i in range(1, n + 1):
+            if min(x1, i) - max(x0, i - 1) >= 0.2:
+                out.add(i)
+    return out
+
+
 def validate(spec: dict, rules: dict) -> list:
     """Return [(level, where, message)] for the whole campaign. Errors stop a render."""
     issues = []
@@ -254,6 +291,12 @@ def validate(spec: dict, rules: dict) -> list:
                     words = len(re.findall(r"\w+", t.replace("**", "")))
                     if words > 9:
                         issues.append(("warn", where, f"headline [{loc}] has {words} words; 3–8 read at store size"))
+    shown = in_use_panels(spec)
+    if 2 * len(shown) <= n:
+        rest = [str(i) for i in range(1, n + 1) if i not in shown]
+        issues.append(("error", "storyboard", f"2.3.3: only {len(shown)} of {n} panels show the app in use (not "
+                       f"{', '.join(rest)}); App Review approves a set only when more than half do, per device and "
+                       f"language. A login, sign-in or splash screen doesn't count ({IN_USE_HELP})"))
     if not c["mockup_only"]:
         for sid in sorted(used):
             for loc in c["locales"]:
