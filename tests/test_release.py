@@ -149,12 +149,9 @@ def test_archive_without_xcodegen_flag_or_key(tmp_path, capsys):
 def test_wait_dry_run(tmp_path, capsys):
     kit, keyfile = key_kit(tmp_path)
     assert rl.main(["wait", "--kit", str(kit), "--version", "1.1.0", "--build", "31", "--dry-run"]) == 0
-    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("would run:"))
-    for flag in ["xcrun altool --build-status", "--apple-id 6700000000", "--bundle-version 31",
-                 "--bundle-short-version-string 1.1.0", "--platform ios", "--api-key KEY123", "--api-issuer ISS-1",
-                 "--wait"]:
-        assert flag in line
-    assert str(keyfile.parent) not in line
+    out = capsys.readouterr().out
+    assert "filter[app]=6700000000" in out and "filter[version]=31" in out and "1.1.0" in out
+    assert "altool" not in out and str(keyfile.parent) not in out
 
 
 def test_wait_needs_app_id(tmp_path):
@@ -234,3 +231,32 @@ def test_team_from_xcode_archives(tmp_path):
     (other / "Info.plist").write_bytes(plistlib.dumps({"Name": "Other", "ApplicationProperties": {"Team": "ZZZ"}}))
     assert rl.team_from_xcode_archives("App", tmp_path) == "NEWTEAM002"
     assert rl.team_from_xcode_archives("Missing", tmp_path) is None
+
+
+class _FakeBuilds:
+    def __init__(self, states):
+        self.states = list(states)
+
+    def get(self, path, params=None):
+        assert path == "/v1/builds" and params["filter[version]"] == "24"
+        s = self.states.pop(0)
+        return {"data": [] if s is None else [{"attributes": {"processingState": s}}]}
+
+
+def _wait_args(**kw):
+    import argparse
+    d = dict(app_id="123", kit=None, version="1.0.0", build="24", dry_run=False, interval=1, timeout=10)
+    d.update(kw)
+    return argparse.Namespace(**d)
+
+
+def test_wait_polls_api_until_valid():
+    fake = _FakeBuilds([None, "PROCESSING", "VALID"])
+    assert rl.cmd_wait(_wait_args(), sleep=lambda s: None, client=fake) == 0
+    assert not fake.states
+
+
+def test_wait_reports_failure_and_timeout():
+    assert rl.cmd_wait(_wait_args(), sleep=lambda s: None, client=_FakeBuilds(["INVALID"])) == 1
+    assert rl.cmd_wait(_wait_args(timeout=2), sleep=lambda s: None,
+                       client=_FakeBuilds(["PROCESSING"] * 5)) == 3

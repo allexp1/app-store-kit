@@ -35,6 +35,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 import yaml
 
@@ -382,29 +383,45 @@ def app_id_from_kit(kit) -> str | None:
     return None
 
 
-def cmd_wait(a) -> int:
+def build_processing_state(client, app_id: str, version: str, build: str) -> str | None:
+    """processingState of the uploaded build (PROCESSING, FAILED, INVALID, VALID), or None while it isn't listed."""
+    data = client.get("/v1/builds", {"filter[app]": app_id, "filter[version]": str(build),
+                                     "filter[preReleaseVersion.version]": version, "limit": 5}).get("data", [])
+    return (data[0].get("attributes") or {}).get("processingState") if data else None
+
+
+def cmd_wait(a, sleep=time.sleep, client=None) -> int:
+    """Polls the App Store Connect API until the build is processed. (altool --build-status now demands a
+    --delivery-id that the upload step doesn't return, so the API is the reliable route.)"""
     app_id = a.app_id or app_id_from_kit(a.kit)
     if not app_id:
         print("error: the app's Apple ID is unknown: pass --app-id or add api.app_id to connect.yaml "
               "(App Store Connect → App Information → Apple ID)", file=sys.stderr)
         return 2
-    key = resolve_key(a.kit)
-    cmd = ["xcrun", "altool", "--build-status", "--apple-id", app_id, "--bundle-version", str(a.build),
-           "--bundle-short-version-string", a.version, "--platform", "ios"]
-    env = None
-    if key:
-        cmd += ["--api-key", key["key_id"]]
-        if key["issuer_id"]:
-            cmd += ["--api-issuer", key["issuer_id"]]
-        kp = pathlib.Path(key["key_path"])
-        if kp.name == f"AuthKey_{key['key_id']}.p8":
-            env = {"API_PRIVATE_KEYS_DIR": str(kp.parent)}  # altool's documented lookup; path stays off the line
-        else:
-            cmd += ["--p8-file-path", str(kp)]
-    else:
-        print("note: no API key configured; altool needs --api-key/--api-issuer (or -u/-p) to check status")
-    cmd += ["--wait"]
-    return run(cmd, dry_run=a.dry_run, secrets=secrets_of(key), env=env)
+    if a.dry_run:
+        print(f"GET /v1/builds?filter[app]={app_id}&filter[version]={a.build}&filter[preReleaseVersion.version]="
+              f"{a.version} every {a.interval}s, up to {a.timeout}s")
+        return 0
+    if client is None:
+        client = asc_api.Client(token=asc_api.TokenSigner(asc_api.resolve_config(kit=a.kit)))
+    waited, last = 0, "not listed yet"
+    while True:
+        state = build_processing_state(client, app_id, a.version, a.build)
+        if state != last:
+            print(f"build {a.version} ({a.build}): {state or 'not listed yet'}", flush=True)
+            last = state
+        if state == "VALID":
+            return 0
+        if state in ("FAILED", "INVALID"):
+            print("error: processing failed; App Store Connect › TestFlight shows the reason, and the build number "
+                  "can be reused", file=sys.stderr)
+            return 1
+        if waited >= a.timeout:
+            print(f"error: still {state or 'not listed'} after {a.timeout}s; more than 24 h in Processing is a "
+                  "Feedback Assistant case", file=sys.stderr)
+            return 3
+        sleep(a.interval)
+        waited += a.interval
 
 
 def main(argv=None) -> int:
@@ -448,6 +465,8 @@ def main(argv=None) -> int:
     w.add_argument("--version", required=True)
     w.add_argument("--build", required=True)
     w.add_argument("--app-id")
+    w.add_argument("--interval", type=int, default=30, help="seconds between checks")
+    w.add_argument("--timeout", type=int, default=3600, help="give up after this many seconds")
     w.add_argument("--dry-run", action="store_true")
 
     a = ap.parse_args(argv)

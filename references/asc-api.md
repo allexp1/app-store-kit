@@ -343,8 +343,13 @@ xcodebuild -exportArchive -archivePath build/App.xcarchive -exportOptionsPlist E
 # 2b) or export with destination=export, then upload the .ipa with altool
 xcrun altool --validate-app build/export/App.ipa --api-key <KID> --api-issuer <ISSUER> --p8-file-path AuthKey_<KID>.p8
 xcrun altool --upload-package build/export/App.ipa --api-key <KID> --api-issuer <ISSUER> --p8-file-path AuthKey_<KID>.p8 --wait --output-format json
-xcrun altool --build-status --apple-id <APP_ID> --bundle-version <CFBundleVersion> --bundle-short-version-string <ver> --platform ios --api-key <KID> --api-issuer <ISSUER> --wait
+# 3) wait for processing through the API (release.py wait does this):
+#    GET /v1/builds?filter[app]=<APP_ID>&filter[version]=<CFBundleVersion>&filter[preReleaseVersion.version]=<ver>
+#    until attributes.processingState is VALID (or FAILED / INVALID)
 ```
+
+- `altool --build-status` now refuses without `--delivery-id` ("Expected delivery ID argument is missing", seen
+  2026-10-29 with Xcode 27), and the xcodebuild upload doesn't print that id; poll the API instead.
 
 Notes:
 - `method` values: `app-store-connect`, `release-testing`, `enterprise`, `debugging`, `developer-id`, `mac-application`, `validation`. `app-store` is deprecated.
