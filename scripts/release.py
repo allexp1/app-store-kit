@@ -277,6 +277,15 @@ def cmd_archive(a) -> int:
             "-archivePath", str(archive), "archive", "-allowProvisioningUpdates", *xcode_auth_flags(key)]
     if not key:
         print("note: no App Store Connect API key configured; xcodebuild uses the account signed in to Xcode")
+    # Projects that leave DEVELOPMENT_TEAM out (set once in Xcode's UI, or lost to xcodegen) fail with "Signing for
+    # <extension> requires a development team". Pass it on the command line instead of editing the project.
+    if not team_from_project(proj):
+        team = a.team_id or team_from_xcode_archives(a.scheme)
+        if team:
+            cmd.append(f"DEVELOPMENT_TEAM={team}")
+            print(f"note: DEVELOPMENT_TEAM={team} ({'--team-id' if a.team_id else 'the last Xcode archive of ' + a.scheme})")
+        else:
+            print("note: no DEVELOPMENT_TEAM in the project; pass --team-id if signing fails")
     rc = run(cmd, dry_run=a.dry_run, cwd=proj, secrets=secrets_of(key))
     if rc == 0 and not a.dry_run:
         print(f"archive: {archive}")
@@ -294,6 +303,22 @@ def team_from_archive(archive: pathlib.Path) -> str | None:
     except Exception:
         return None
     return (data.get("ApplicationProperties") or {}).get("Team")
+
+
+def team_from_xcode_archives(name: str, root: pathlib.Path | None = None) -> str | None:
+    """The team of the newest archive in Xcode's Organizer whose Name is `name` (the scheme)."""
+    root = root or pathlib.Path.home() / "Library/Developer/Xcode/Archives"
+    found = []
+    for arch in root.glob("*/*.xcarchive"):
+        try:
+            data = plistlib.loads((arch / "Info.plist").read_bytes())
+        except Exception:
+            continue
+        team = (data.get("ApplicationProperties") or {}).get("Team")
+        if data.get("Name") == name and team:
+            found.append((data.get("CreationDate") or arch.stat().st_mtime, str(arch), team))
+    found.sort(key=lambda t: (str(t[0]), t[1]))
+    return found[-1][2] if found else None
 
 
 def team_from_project(project: pathlib.Path | None) -> str | None:
@@ -405,6 +430,7 @@ def main(argv=None) -> int:
     r.add_argument("--xcodegen", action="store_true")
     r.add_argument("--out")
     r.add_argument("--kit")
+    r.add_argument("--team-id", help="DEVELOPMENT_TEAM when the project does not set it")
     r.add_argument("--dry-run", action="store_true")
 
     u = sub.add_parser("upload")

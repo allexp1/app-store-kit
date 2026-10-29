@@ -220,3 +220,17 @@ def test_last_build_auto_project_bundle_dry_run_and_stale_build(tmp_path, monkey
     assert path.read_text() == original
     assert rl.main(['bump', str(project), '--last-build', 'auto', '--build', '40']) == 1
     assert path.read_text() == original
+
+
+def test_team_from_xcode_archives(tmp_path):
+    import plistlib
+    for day, team in (("2026-10-01", "OLDTEAM001"), ("2026-10-13", "NEWTEAM002")):
+        arch = tmp_path / day / f"App {day}.xcarchive"
+        arch.mkdir(parents=True)
+        (arch / "Info.plist").write_bytes(plistlib.dumps({"Name": "App", "CreationDate": day,
+                                                          "ApplicationProperties": {"Team": team}}))
+    other = tmp_path / "2026-10-20" / "Other.xcarchive"
+    other.mkdir(parents=True)
+    (other / "Info.plist").write_bytes(plistlib.dumps({"Name": "Other", "ApplicationProperties": {"Team": "ZZZ"}}))
+    assert rl.team_from_xcode_archives("App", tmp_path) == "NEWTEAM002"
+    assert rl.team_from_xcode_archives("Missing", tmp_path) is None
