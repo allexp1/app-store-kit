@@ -311,6 +311,19 @@ def precheck_results(kit):
     return res
 
 
+ATT_MSG = re.compile(r"App Tracking Transparency|AppTrackingTransparency|tracking permission request", re.I)
+ATT_GUIDE = {
+    "fix": "Make the ATT prompt appear in the first session of a fresh install, on the first real screen and after "
+           "any other system alert has closed (consent form first where required); keep ads as late as you like. "
+           "Upload a new build. If the app does not track at all, instead remove tracking from App Privacy in App "
+           "Store Connect (Account Holder or Admin) and drop the ATT code and NSUserTrackingUsageDescription.",
+    "evidence": "A screen recording from a PHYSICAL device: fresh install (or Settings > Privacy & Security > "
+                "Tracking reset), the ATT prompt before any tracking, and the flow after it. Attach it in the reply "
+                "and put it (or its link) in App Review Information > Notes for future submissions.",
+    "reply": "[When exactly the ATT prompt appears in the new build, step by step from a fresh install; the attached "
+             "device recording; whether the consent form comes first in some regions.]"}
+
+
 def triage(parsed, cat, prechecks=None):
     """Per guideline: rules, build needed, fix, evidence. Plus the suggested path and why."""
     prechecks = prechecks or {}
@@ -319,6 +332,13 @@ def triage(parsed, cat, prechecks=None):
         gd = guide_for(g["id"])
         rules = list(dict.fromkeys((gd or {}).get("rules", []) + catalogue_matches(g["id"], cat)))
         info = bool(INFO_NEEDED.search(g["title"]) or INFO_NEEDED.search(g["text"][:300]))
+        att = bool(ATT_MSG.search(g["text"]))
+        if att:
+            # "Unable to locate the ATT request" reads as information needed, but the usual cause is a prompt
+            # deferred behind usage (PR-17): fix the build unless the pre-check already shows it reachable.
+            gd = dict(gd or {}, **ATT_GUIDE)
+            rules = ["PR-17", "PR-04"] + [r for r in rules if r not in ("PR-17", "PR-04")]
+            info = info and prechecks.get("PR-17") == "PASS"
         items.append({
             "id": g["id"], "title": g["title"] or (gd or {}).get("title", ""), "known": gd is not None,
             "info_needed": info, "build": (gd or {}).get("build", True) and not info,

@@ -384,3 +384,26 @@ def test_october_2026_guidelines_have_guides():
     assert rj.guide_for("2.3.14")["rules"][0] == "MD-13" and not rj.guide_for("2.3.14")["build"]
     assert "CS-03" in rj.guide_for("1.2")["rules"]
     assert "2.5.19" in rj.guide_for("2.3.1")["fix"]
+
+
+ATT_INFO = """
+Guideline 2.1 - Information Needed
+
+The app uses the AppTrackingTransparency framework, but we are unable to locate the App Tracking Transparency
+permission request when reviewed on iPadOS 27.2 and iOS 27.2.
+
+Once the permission request is appearing as expected, reply with a screen recording captured on a physical device.
+"""
+
+
+def test_att_not_found_suggests_a_fix_not_just_a_reply():
+    t = rj.triage(rj.parse_message(HEAD + ATT_INFO), rj.load_catalogue())
+    item = t["items"][0]
+    assert [r["id"] for r in item["rules"]][:2] == ["PR-17", "PR-04"]
+    assert item["build"] and t["path"] == "fix"
+    assert "PHYSICAL device" in item["evidence"] and "first session" in item["fix"]
+
+
+def test_att_not_found_with_reachable_prompt_is_a_reply():
+    t = rj.triage(rj.parse_message(HEAD + ATT_INFO), rj.load_catalogue(), {"PR-17": "PASS"})
+    assert t["path"] == "reply"

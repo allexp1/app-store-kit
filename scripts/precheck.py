@@ -1405,6 +1405,62 @@ def chk_att(p, r, opt):
                                  r"Adjust\.(appDidLaunch|initSdk)"), 3))
 
 
+ATT_GATE_RX = re.compile(
+    r"launchCount|launches|sessionCount|appOpens|isFirstSession|firstSession|decisionsSince|actionsSince|"
+    r"swipeCount|cadence|daysSince|daysSinceInstall|minimumLaunches|interval\b|>=\s*[1-9]\d", re.I)
+ATT_LATE_RX = re.compile(r"interstitial|rewarded|naturalPause|adPause|showAd|presentAd|loadAd", re.I)
+
+
+FUNC_RX = re.compile(r"\bfunc\s+(\w+)")
+
+
+def _enclosing(p, line):
+    """(name, body lines up to `line`) of the Swift function that contains `line`, or (None, [])."""
+    lines = [l for l in p.code if l.path == line.path and l.no <= line.no]
+    for k in range(len(lines) - 1, -1, -1):
+        m = FUNC_RX.search(lines[k].text)
+        if m:
+            return m.group(1), lines[k:]
+    return None, []
+
+
+def _gated(lines):
+    code = [l for l in lines if not l.debug and not l.text.lstrip().startswith("//")]
+    return [l for l in code if ATT_GATE_RX.search(l.text) or ATT_LATE_RX.search(l.text)]
+
+
+@check("PR-17")
+def chk_att_reachable(p, r, opt):
+    """App Review looks for the ATT prompt in the first minutes of a fresh install (Guideline 2.1, 'unable to
+    locate the App Tracking Transparency permission request'). A prompt deferred behind launches, usage counts or
+    the first ad is correct in law but invisible to the reviewer. Each request site is judged by its own function
+    and the few lines around each call of that function; one ungated site is enough."""
+    req = p.grep(r"requestTrackingAuthorization")
+    if not req:
+        return
+    gated_sites, evidence = 0, []
+    for site in req:
+        name, body = _enclosing(p, site)
+        hits = _gated(body)
+        if name and not hits:
+            for c in (l for l in p.grep(rf"\b{re.escape(name)}\s*\(") if not FUNC_RX.search(l.text)):
+                hits += _gated([l for l in p.code if l.path == c.path and abs(l.no - c.no) <= 4])
+        if not hits:
+            break   # one site a reviewer reaches without a threshold is enough
+        gated_sites += 1
+        evidence += ev([site], 1) + ev(hits, 2)
+    if gated_sites == len(req):
+        r.fail("PR-17", "The ATT prompt looks deferred behind usage (launch or action counts, or the first ad), so "
+                        "a reviewer on a fresh install may never see it; Apple then rejects under 2.1 and asks for a "
+                        "device recording.", evidence,
+               "Ask for consent (UMP) and ATT in the first session, on the first real screen and after any "
+               "system alert has closed; keep ads themselves as late as you like. Say in the review notes exactly "
+               "when it appears, and attach a physical-device screen recording of a fresh install.")
+        return
+    r.ask("PR-17", "Does the ATT prompt appear within the first minute of a fresh install, without the reviewer "
+                   "having to reach a usage threshold, and do the review notes say exactly where?", ev(req, 3))
+
+
 @check("PR-05")
 def chk_att_eu(p, r, opt):
     hits = p.grep(r"preferExpandedInterface")

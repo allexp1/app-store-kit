@@ -85,7 +85,9 @@ Notes are limited to 4000 bytes and can be in any language. Guideline 2.3.1(a): 
 8. **Required hardware:** a video (not a screen recording) of the app running on a physical Apple device as it pairs
    with and uses the accessory.
 9. **Permissions:** why each one is requested, and what happens if it's denied.
-10. **Ads and consent:** whether a consent form (UMP) or the ATT prompt can appear, and in which regions.
+10. **Ads and consent:** whether a consent form (UMP) or the ATT prompt can appear, in which regions, and exactly
+    when on a fresh install. The ATT prompt must show in the reviewer's first session, without a usage threshold
+    (pre-check PR-17); attach a physical-device screen recording of it (fresh install, the prompt, the flow after).
 11. **Feature flags (2.5.19):** every remotely controlled feature, its state in this build, and how to reach it.
 12. **Documents** (attach in App Review Information): what the help page lists per guideline, for example regulatory
     clearance (FDA, CE) for diagnosis or treatment claims (1.4.1), a licence per storefront for gambling or lotteries

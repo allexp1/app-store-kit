@@ -63,7 +63,7 @@ def ids(data, sev=None):
 
 def test_catalogue_parses_all_rules():
     cat = pc.load_catalogue()
-    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 105
+    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 106
     assert cat["UP-05"]["severity"] == "BLOCKER"
     assert cat["DF-13"]["severity"] == "WARNING"
     assert cat["PAY-02"]["sources"][0].startswith("https://developer.apple.com")
@@ -504,3 +504,32 @@ def test_vague_benefit_with_a_concrete_use_is_asked_not_failed(tmp_path, capsys)
     text = "We use your location to show nearby cafes for a better experience."
     _, data = run_json(make_project(tmp_path, info={"NSLocationWhenInUseUsageDescription": text}), capsys)
     assert "UP-09" not in ids(data)
+
+
+ATT_PINS = [{"identity": "swift-package-manager-google-mobile-ads", "kind": "remoteSourceControl",
+             "location": "https://github.com/googleads/swift-package-manager-google-mobile-ads.git",
+             "state": {"version": "13.10.0"}}]
+
+
+def test_att_prompt_behind_usage_gate_is_flagged(tmp_path, capsys):
+    swift = ('import AppTrackingTransparency\nimport GoogleMobileAds\n'
+             'func naturalPause(launchCount: Int, decisionsSinceLastAd: Int) async {\n'
+             '  guard launchCount > 1, decisionsSinceLastAd >= 25 else { return }\n'
+             '  _ = await ATTrackingManager.requestTrackingAuthorization()\n'
+             '  _ = await MobileAds.shared.start()\n}\n')
+    root = make_project(tmp_path, resolved=ATT_PINS, swift=swift,
+                        info={"NSUserTrackingUsageDescription": "Ads may use your activity in other apps."})
+    _, data = run_json(root, capsys)
+    assert "PR-17" in ids(data, "LIKELY REJECTION")
+
+
+def test_att_prompt_on_first_screen_is_a_question(tmp_path, capsys):
+    swift = ('import AppTrackingTransparency\nimport GoogleMobileAds\n'
+             'func onFirstScreen() async {\n'
+             '  _ = await ATTrackingManager.requestTrackingAuthorization()\n'
+             '  _ = await MobileAds.shared.start()\n}\n')
+    root = make_project(tmp_path, resolved=ATT_PINS, swift=swift,
+                        info={"NSUserTrackingUsageDescription": "Ads may use your activity in other apps."})
+    _, data = run_json(root, capsys)
+    assert "PR-17" not in ids(data, "LIKELY REJECTION")
+    assert "PR-17" in json.dumps(data)

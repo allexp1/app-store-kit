@@ -272,6 +272,8 @@ Generated imagery follows `references/image-generation.md`, with a provenance ma
   - the build shows Complete in App Store Connect (Failed: the build number can be reused; more than 24 h in Processing: Feedback Assistant); no 200 MB over-the-air download warning unless expected;
   - every URL returns 200 with real content; the privacy policy is reachable from inside the app and names every SDK;
   - privacy labels match the privacy report; `NSUserTrackingUsageDescription` exists if anything tracks;
+  - when the app asks for tracking, the ATT prompt appears in the first session of a fresh install, with no usage
+    threshold (PR-17), the review notes say exactly when, and a physical-device recording of it is attached;
   - the IAP was checked in sandbox and TestFlight: product ID, price, restore, and the purchased effect (for example ads gone). The IAP is submitted together with the version;
   - an acceptance matrix for each sensitive permission the app uses. For Photos that means denied, limited and full access; an empty library; iCloud-only items; deletion and Recently Deleted; iPad rotation.
 - **`kit/ACCOUNT.md`**: steps only the account holder can do. Ask them as questions, because the skill can't see them:
