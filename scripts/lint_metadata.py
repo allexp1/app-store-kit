@@ -229,8 +229,12 @@ def lint(meta: dict, facts: dict, rules: dict, scope="metadata", kit=None, seen_
     for k, txt in texts.items():
         if not txt:
             continue
-        if PLACEHOLDER.search(txt):
-            f.e(f"{k}: placeholder text '{PLACEHOLDER.search(txt).group(0)}' (2.1)")
+        ph = PLACEHOLDER.search(txt)
+        # "todo" is an ordinary word in Spanish, Portuguese, Catalan and Galician ("em todo lugar").
+        if ph and ph.group(0).lower() == "todo" and re.match(r"metadata\.(es|pt|ca|gl)\b", scope or ""):
+            ph = PLACEHOLDER.search(re.sub(r"\btodo\b", "", txt, flags=re.I))
+        if ph:
+            f.e(f"{k}: placeholder text '{ph.group(0)}' (2.1)")
         if PRICE.search(txt):
             f.e(f"{k}: price '{PRICE.search(txt).group(0).strip()}' in metadata (2.3.7; prices differ by storefront)")
         if OTHER_PLATFORMS.search(txt):

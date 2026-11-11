@@ -407,3 +407,48 @@ def test_att_not_found_suggests_a_fix_not_just_a_reply():
 def test_att_not_found_with_reachable_prompt_is_a_reply():
     t = rj.triage(rj.parse_message(HEAD + ATT_INFO), rj.load_catalogue(), {"PR-17": "PASS"})
     assert t["path"] == "reply"
+
+
+PERMISSION_MSG = """Guideline 5.1.1(iv) - Legal - Privacy - Data Collection and Storage
+
+Issue Description
+
+The app encourages or directs users to allow the app to access location. Specifically, the app directs the user to grant permission in the following way(s):
+
+- A custom message appears before the permission request, and to proceed users press a "Allow location" button. Use words like "Continue" or "Next" on the button instead.
+"""
+WEATHER_REJECTION = """Guideline 5.2.5 - Legal - Intellectual Property - Apple Products
+
+Issue Description
+
+The app appears to support WeatherKit but we need to confirm if the app follows the WeatherKit attribution requirements. WeatherKit apps must clearly display the Apple Weather trademark and the legal source link, so users know the source of the weather information.
+"""
+
+
+def test_permission_button_message_maps_to_pr18():
+    item = rj.triage(rj.parse_message(PERMISSION_MSG), rj.load_catalogue())["items"][0]
+    assert item["known"] and item["build"] and item["rules"][0]["id"] == "PR-18"
+    assert "Continue" in item["fix"]
+
+
+def test_weatherkit_message_maps_to_pr19_and_needs_a_recording():
+    t = rj.triage(rj.parse_message(WEATHER_REJECTION), rj.load_catalogue())
+    item = t["items"][0]
+    assert item["rules"][0]["id"] == "PR-19" and item["build"] and t["path"] == "fix"
+    assert "PHYSICAL device" in item["evidence"]
+
+
+def test_a_plain_5_2_5_message_stays_about_look_alikes():
+    item = rj.triage(rj.parse_message("Guideline 5.2.5 - Apple Products\n\nYour icon looks like Apple's.\n"),
+                     rj.load_catalogue())["items"][0]
+    assert "PR-19" not in item["rules"][0]["id"] and "looks like" in item["fix"]
+
+
+def test_a_second_triage_keeps_the_earlier_report(tmp_path):
+    kit = make_kit(tmp_path)
+    run_triage(kit, PERMISSION_MSG)
+    first = (kit / "REJECTION.md").read_text()
+    run_triage(kit, WEATHER_REJECTION)
+    kept = list(kit.glob("REJECTION-*.md"))
+    assert len(kept) == 1 and kept[0].read_text() == first
+    assert "WeatherKit" in (kit / "REJECTION.md").read_text()

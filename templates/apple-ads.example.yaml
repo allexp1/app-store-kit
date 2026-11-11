@@ -1,0 +1,65 @@
+# Apple Ads campaign plan for one app. Copy to KIT/apple-ads.yaml and edit.
+# Read references/apple-ads.md first. Every campaign is created PAUSED; turning one on is its own yes.
+#   python3 scripts/apple_ads.py check KIT      offline: validates this file, prints the structure and budget
+#   python3 scripts/apple_ads.py plan KIT       reads the account, writes apple-ads-plan.md/.json (no writes)
+#   python3 scripts/apple_ads.py apply KIT --yes        creates exactly the plan, all PAUSED
+#   python3 scripts/apple_ads.py activate KIT --campaign ID --yes   starts spending
+
+app:
+  adam_id: 1234567890          # the App Store app id (Apple ID in App Store Connect)
+  name: Example App            # used in campaign names only
+
+currency: USD                  # must equal the Apple Ads account currency (it can never change)
+
+# What an install is worth to you. The starting bids and every optimisation rule steer by it.
+# Affordable CPA = revenue per install over the payback window you accept.
+target_cpa: 3.00
+
+# Hard ceiling: no planned or proposed keyword bid ever goes above this.
+max_bid: 4.00
+
+# Expected tap-to-install rates used for the starting bids (max CPT = target_cpa x rate x tier).
+# Apple: top-of-search conversion averages over 60 %; the defaults below are conservative.
+# expected_cr: {brand: 0.6, category: 0.4, competitor: 0.25, discovery: 0.3}
+
+# One campaign per theme and market. Exact match for brand/category/competitor, Search Match off.
+# Discovery gets a broad-match ad group (all keywords below as broad) and a Search Match ad group,
+# and every exact keyword as an exact negative so the campaigns never compete.
+keywords:
+  brand: [example app, exampleapp]
+  category: [budget planner, expense tracker, money manager]
+  competitor: []               # names of similar apps; leave empty if unsure
+  negative: [free money, casino]   # added as exact negatives to every campaign
+
+# Search results bid strategy per theme: manage_bids (you set bids) or maximize_conversions
+# (Apple's auto-bidder at target_cpa; budget at least 5 x target_cpa a day, wait 2 weeks before changing).
+strategy:
+  brand: manage_bids
+  category: manage_bids
+  competitor: manage_bids
+  discovery: manage_bids
+
+# Markets: one set of campaigns per market. Big markets alone, small ones grouped by value or language.
+# daily_budget is the market total; it is split across the themes below (shares must add up to 1).
+markets:
+  - name: US
+    countries: [US]
+    daily_budget: 40
+  # - name: UK_IE
+  #   countries: [GB, IE]
+  #   daily_budget: 15
+
+budget_split: {brand: 0.15, category: 0.35, competitor: 0.2, discovery: 0.3}
+
+# Who sees the ads. Apple advises leaving the audience open: any age/gender refinement drops users with
+# Personalized Ads off (78 % of search volume) and AdServices then reports attribution:false.
+customer_type: all             # all | new | returning | other_apps
+# other_app_ids: [111, 222]    # only for customer_type: other_apps
+
+# Optional ad variations: a custom product page id per theme (made in App Store Connect / growth.yaml).
+# custom_product_pages: {category: 00000000-0000-0000-0000-000000000000}
+
+# France (Sapin law): set true only if you own both the app and the Apple Ads account.
+owns_app_and_account: false
+# France also asks each campaign whether the advertiser is a French business (true / false); needed when FR is targeted.
+# french_business: false

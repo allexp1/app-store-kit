@@ -274,6 +274,15 @@ def cmd_archive(a) -> int:
     workspaces = [w for w in proj.glob("*.xcworkspace")]
     if len(workspaces) == 1:
         cmd += ["-workspace", workspaces[0].name]
+    else:
+        # iCloud Drive leaves conflict copies ("App 2.xcodeproj"); xcodebuild then refuses to guess. Prefer the
+        # project named after the scheme.
+        projects = sorted(proj.glob("*.xcodeproj"))
+        if len(projects) > 1:
+            named = proj / f"{a.scheme}.xcodeproj"
+            if not named.exists():
+                sys.exit(f"several projects in {proj} and none is {a.scheme}.xcodeproj; remove the copies")
+            cmd += ["-project", named.name]
     cmd += ["-scheme", a.scheme, "-configuration", "Release", "-destination", "generic/platform=iOS",
             "-archivePath", str(archive), "archive", "-allowProvisioningUpdates", *xcode_auth_flags(key)]
     if not key:

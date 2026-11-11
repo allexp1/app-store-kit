@@ -6,6 +6,7 @@ node_modules/
 *.tgz
 # Never commit App Store Connect keys or a kit's private values.
 *.p8
+*.pem
 private.yaml
 connect-guide.private.html
 .venv/

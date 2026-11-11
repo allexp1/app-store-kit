@@ -152,7 +152,9 @@ CONTENT_RIGHTS = {"uses_third_party": "USES_THIRD_PARTY_CONTENT", "none": "DOES_
 CATEGORIES = {"BOOKS", "BUSINESS", "DEVELOPER_TOOLS", "EDUCATION", "ENTERTAINMENT", "FINANCE", "FOOD_AND_DRINK",
               "GAMES", "GRAPHICS_AND_DESIGN", "HEALTH_AND_FITNESS", "LIFESTYLE", "MAGAZINES_AND_NEWSPAPERS",
               "MEDICAL", "MUSIC", "NAVIGATION", "NEWS", "PHOTO_AND_VIDEO", "PRODUCTIVITY", "REFERENCE",
-              "SHOPPING", "SOCIAL_NETWORKING", "SPORTS", "STICKERS", "TRAVEL", "UTILITIES", "WEATHER", "KIDS"}
+              "SHOPPING", "SOCIAL_NETWORKING", "SPORTS", "STICKERS", "TRAVEL", "UTILITIES", "WEATHER"}
+# Not a category id: an app enters the Kids Category through the age rating's kidsAgeBand (GET /v1/appCategories has no KIDS).
+KIDS_CATEGORY = "KIDS"
 
 LIMITS = {"name": 30, "subtitle": 30, "promotionalText": 170, "description": 4000, "whatsNew": 4000}
 FIELD_LABELS = {  # API attribute → the label connect_guide.py uses (progress live values)
@@ -561,7 +563,7 @@ def iap_versions(client, iid):
 
 def read_iap(client, app_id, pid, kit, details=True):
     out = {"iap": None, "version": None, "versions": [], "versioned": True, "busy": None, "locs": {}, "image": None,
-           "image_kind": "v2", "price": None, "price_point": None, "want_point": None}
+           "image_kind": "v1", "price": None, "price_point": None, "want_point": None}
     found = client.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"filter[productId]": pid, "limit": 200})
     iap = next((x for x in found if attrs(x).get("productId") == pid), None)
     out["iap"] = iap
@@ -582,13 +584,6 @@ def read_iap(client, app_id, pid, kit, details=True):
     if ver:
         locs = client.get_all(f"/v1/inAppPurchaseVersions/{ver['id']}/localizations", {"limit": 200})
         out["locs"] = {attrs(x).get("locale"): x for x in locs}
-        try:
-            doc = client.get(f"/v1/inAppPurchaseVersions/{ver['id']}/image")
-            out["image"] = (doc or {}).get("data")
-        except ASCError as e:
-            if e.status not in (400, 404):
-                raise
-            out["image_kind"] = "v1"
     elif out["versions"]:   # compare with the newest version's texts; apply makes the next version
         newest = max(out["versions"], key=lambda v: attrs(v).get("version") or 0)
         locs = client.get_all(f"/v1/inAppPurchaseVersions/{newest['id']}/localizations", {"limit": 200})
@@ -600,8 +595,10 @@ def read_iap(client, app_id, pid, kit, details=True):
         except ASCError as e:
             if e.status != 404:
                 raise
-    if out["image_kind"] == "v1":
-        out["image"] = get_one(client, f"/v2/inAppPurchases/{iid}/appStoreReviewScreenshot")
+    # The kit's image is the review screenshot: always v1 inAppPurchaseAppStoreReviewScreenshots on the purchase.
+    # The version's v2 `image` is the 1024x1024 promotional image; review screenshots sent there failed
+    # (live 2026-10-17, Kids Love Science: eight FAILED promo images, IAPs stuck in MISSING_METADATA).
+    out["image"] = get_one(client, f"/v2/inAppPurchases/{iid}/appStoreReviewScreenshot")
     f = next((x for x in kit.iaps() if x.get("product_id") == pid), {})
     amount, terr, _ = iap_price_want(f)
     out["price"], out["price_point"] = iap_live_price(client, iid, terr or "USA")
@@ -741,7 +738,11 @@ def plan_text(P):
     if cat and live.get("app_info"):
         want = {"primary": category_id(cat.get("primary")), "secondary": category_id(cat.get("secondary"))}
         for k, v in want.items():
-            if v and v not in CATEGORIES:
+            if v == KIDS_CATEGORY:
+                P.errors.append(f"{k} category 'Kids' isn't an App Store category id: the Kids Category comes from "
+                                "connect.yaml age_rating.kidsAgeBand; pick a real category (e.g. Education, Books)")
+                want[k] = None
+            elif v and v not in CATEGORIES:
                 P.warnings.append(f"category {cat.get(k)!r} maps to {v}, which isn't a known App Store category id")
         cur = live.get("categories") or {}
         ch = [{"locale": None, "field": f"{k} category", "old": cur.get(k), "new": v}
@@ -1659,7 +1660,7 @@ def plan_iap(P):
         iap = L.get("iap")
         name = f.get("display_name") or f.get("reference_name") or pid
         it = {"product_id": pid, "name": name, "iap_id": (iap or {}).get("id"), "create_iap": None,
-              "version_id": (L.get("version") or {}).get("id"), "image_kind": L.get("image_kind", "v2"),
+              "version_id": (L.get("version") or {}).get("id"), "image_kind": L.get("image_kind", "v1"),
               "versioned": L.get("versioned", True), "locs": [], "image": None}
         changes = []
         busy = L.get("busy")

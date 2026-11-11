@@ -288,7 +288,7 @@ def validate(spec: dict, rules: dict) -> list:
                     issues.append(("warn", where, f"{field} for {loc} falls back to {src}: untranslated"))
                 check_copy(t, f"{where} {field} [{loc}]", p.get("evidence"), issues)
                 if field == "headline":
-                    words = len(re.findall(r"\w+", t.replace("**", "")))
+                    words = len(re.findall(r"[\w\u0900-\u097F\u0E00-\u0E7F\u0980-\u0DFF]+", t.replace("**", "")))  # Indic/Thai marks aren't \w
                     if words > 9:
                         issues.append(("warn", where, f"headline [{loc}] has {words} words; 3–8 read at store size"))
     shown = in_use_panels(spec)

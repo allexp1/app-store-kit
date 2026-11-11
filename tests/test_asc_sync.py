@@ -1165,8 +1165,10 @@ def test_iap_localizations_join_the_in_flight_version_instead_of_a_new_one(tmp_p
     locs = {r["attributes"]["locale"]: r for r in fake.of_type("inAppPurchaseLocalizations")}
     assert set(locs) == {"en-US", "ru", "uk"} and locs["en-US"]["attributes"]["name"] == "Pebble Pro"
     assert all(r["relationships"]["version"]["data"]["id"] == "iapv1" for r in locs.values())
-    img = fake.of_type("inAppPurchaseImages")[0]
-    assert img["relationships"]["version"]["data"]["id"] == "iapv1"
+    # the kit's image is the review screenshot, on the purchase (never the version's promo image)
+    assert not fake.of_type("inAppPurchaseImages")
+    shot = fake.of_type("inAppPurchaseAppStoreReviewScreenshots")[0]
+    assert shot["relationships"]["inAppPurchaseV2"]["data"]["id"] == "iap1"
 
 
 def test_iap_localization_made_meanwhile_is_changed_not_posted_twice(tmp_path, capsys):

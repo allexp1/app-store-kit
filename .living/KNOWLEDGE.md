@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-10-17
+last_updated: 2026-11-02
 review_interval_days: 7
 mode: advisory
 spec: living-skills/1.1
@@ -73,6 +73,10 @@ spec: living-skills/1.1
 
 ## App Review Help (developer.apple.com/help/app-review, read 2026-10-17)
 
+- 2.3.3 (App Review Help page, re-read 2026-11-02): "Update your screenshots with each new version so they match the
+  current user interface." Overlays showing input (touch point, Pencil), Dark Mode and one image spread across
+  screenshots are allowed; overlays that crowd out the app or hardware-only shots are not. Third-party platform
+  references in a status bar fall under 2.3.10.
 - 2.3.3: more than half of the screenshots, per device type and language, must
   show the app in use (3 → 2, 4 → 3); login/splash screens don't count.
 - Purpose strings: Apple's bad examples "To use location." and "Your data will be

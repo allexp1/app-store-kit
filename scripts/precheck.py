@@ -1461,6 +1461,103 @@ def chk_att_reachable(p, r, opt):
                    "having to reach a usage threshold, and do the review notes say exactly where?", ev(req, 3))
 
 
+PERMISSION_CALL = (r"request(?:WhenInUse|Always)Authorization\b|\brequestAuthorization\(|requestFullAccessToEvents|"
+                   r"requestWriteOnlyAccessToEvents|requestFullAccessToReminders|\brequestAccess\(")
+GRANT_WORD_RX = re.compile(r"^\s*(?:Allow|Enable|Grant|Turn on|Permit|Authori[sz]e)\b", re.I)
+TELLS_ANSWER_RX = re.compile(r"\b(?:tap|press|choose|select)\s+(?:on\s+)?[\"“‘«']?(?:Allow|OK)\b", re.I)
+UI_LABEL_RX = re.compile(r'(?:Button|Text|Label)\(\s*"([^"\\]+)"|(?:localized:|LocalizedStringKey\()\s*"([^"\\]+)"')
+STRINGS_ROW_RX = re.compile(r'^\s*"((?:[^"\\]|\\.)+)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;', re.M)
+
+
+def primary_strings(p):
+    """{key: text} in the primary language, from en or Base Localizable.strings and the String Catalogs."""
+    out = {}
+    for f in p.find("Localizable.strings"):
+        if f.parent.name in ("en.lproj", "Base.lproj"):
+            out.update(STRINGS_ROW_RX.findall(_read_strings(f)))
+    for f in p.source_files({".xcstrings"}):
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        src = d.get("sourceLanguage", "en")
+        for key, row in (d.get("strings") or {}).items():
+            value = (((row.get("localizations") or {}).get(src) or {}).get("stringUnit") or {}).get("value")
+            out[key] = value or key
+    return out
+
+
+def permission_buttons(p, strings):
+    """[(line, label)] for buttons whose action reaches a permission request and whose label asks for the grant."""
+    reqs = [l for l in p.grep(PERMISSION_CALL)  # a call, not a function that merely has the name
+            if re.search(PERMISSION_CALL, re.sub(r"\bfunc\s+\w+\s*\(", "", l.text))]
+    sites, frontier, seen = list(reqs), list(reqs), set()
+    for _ in range(3):  # a button -> advance() -> requestPermissions() -> the system call, within one file
+        callers = []
+        for s in frontier:
+            name, _body = _enclosing(p, s)
+            if not name or (s.path, name) in seen:
+                continue
+            seen.add((s.path, name))
+            call = rf"\b{re.escape(name)}\s*\("
+            callers += [l for l in p.grep(call)
+                        if l.path == s.path and re.search(call, re.sub(r"\bfunc\s+\w+\s*\(", "", l.text))]
+        sites += callers
+        frontier = callers
+    found = {}
+    for s in sites:
+        lines = [l for l in p.code if l.path == s.path]
+        near = [l for l in lines if s.no - 6 <= l.no <= s.no and re.search(r"\bButton\s*[({]", l.text)]
+        if not near:
+            continue
+        btn = near[-1]
+        depth = 0
+        for l in (l for l in lines if btn.no <= l.no <= btn.no + 14):
+            if l.no > btn.no and re.search(r"\bButton\s*[({]", l.text):
+                break
+            for m in UI_LABEL_RX.finditer(l.text):
+                text = strings.get(m.group(1) or m.group(2), m.group(1) or m.group(2))
+                if GRANT_WORD_RX.search(text):
+                    found[(btn.path, btn.no)] = (btn, text)
+            # Stop where the button's own brackets close, so a header or footer Text after it is not its label.
+            code = re.sub(r'"(?:\\.|[^"\\])*"', '""', l.text)
+            depth += code.count("(") + code.count("{") - code.count(")") - code.count("}")
+            if depth <= 0:
+                break
+    return list(found.values())
+
+
+@check("PR-18")
+def chk_permission_buttons(p, r, opt):
+    strings = primary_strings(p)
+    found = permission_buttons(p, strings)
+    if found:
+        r.fail("PR-18", "A button that leads to a system permission request asks for the grant: "
+                        + ", ".join(sorted({f'"{t}"' for _, t in found})) + ".",
+               [f"{b.path}:{b.no}" for b, _ in found[:6]],
+               'Say "Continue" or "Next" on the button, and let its header or footer say what the feature does.')
+    told = [k for k, v in strings.items() if TELLS_ANSWER_RX.search(v)]
+    if told:
+        r.ask("PR-18", "Does any of this text tell people which answer to give a permission request? Apple treats "
+                       "that as directing them.", told[:6])
+
+
+@check("PR-19")
+def chk_weatherkit_attribution(p, r, opt):
+    uses = p.grep(r"^\s*import\s+WeatherKit\b")
+    if not uses and not p.entitlements.get("com.apple.developer.weatherkit"):
+        return
+    credit = p.grep(r"\.attribution\b|legalPageURL|combinedMark(?:Light|Dark)URL")
+    evidence = ev(uses) or ["entitlements"]
+    if not credit:
+        r.fail("PR-19", "WeatherKit is used but nothing reads its attribution.", evidence,
+               "Show the Apple Weather mark and a link to Apple's other data sources wherever the data appears "
+               "(WeatherService.attribution), and prepare a recording from a physical device for App Review.")
+        return
+    r.ask("PR-19", "Do the Apple Weather mark and the data-sources link appear on every screen that shows weather, "
+                   "and is a recording from a physical device ready for App Review?", ev(credit))
+
+
 @check("PR-05")
 def chk_att_eu(p, r, opt):
     hits = p.grep(r"preferExpandedInterface")
@@ -2000,7 +2097,8 @@ def chk_regulated(p, r, opt):
 
 # --------------------------------------------------------------------------- F. design and functionality
 
-PLACEHOLDER_RX = re.compile(r"\blorem\b|\bipsum\b|\bTODO\b|\bTBD\b|\bFIXME\b|\bplaceholder\b|\basdf\b|"
+# TODO only in capitals: "todo" is an ordinary word in Spanish and Portuguese ("em todo lugar").
+PLACEHOLDER_RX = re.compile(r"\blorem\b|\bipsum\b|(?-i:\bTODO\b)|\bTBD\b|\bFIXME\b|\bplaceholder\b|\basdf\b|"
                             r"hello,? world|coming soon|\[title\]|test@|example\.com|item at \\\(", re.I)
 
 
@@ -2567,7 +2665,7 @@ def to_markdown(p, r, cat, opt):
     s = summary(r)
     out = [f"# Pre-check: {p.yml.get('name') if p.yml else p.root.name}", "",
            f"Project `{p.root}`" + (f", kit `{p.kit}`" if p.kit else "") + f". Run {opt.today.isoformat()} "
-           "against references/precheck-rules.md (App Review Guidelines of June 8, 2026).", "",
+           "against references/precheck-rules.md (App Review Guidelines of October 16, 2026).", "",
            "| BLOCKER | LIKELY REJECTION | WARNING | PASS | For Claude to judge | Not scanned, undecided |", "|---|---|---|---|---|---|",
            f"| {s['BLOCKER']} | {s['LIKELY REJECTION']} | {s['WARNING']} | {s['PASS']} | {s['FOR CLAUDE']} | {s['NOT SCANNED']} |", ""]
     for sev in SEVERITIES:

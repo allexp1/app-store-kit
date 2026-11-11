@@ -63,7 +63,7 @@ def ids(data, sev=None):
 
 def test_catalogue_parses_all_rules():
     cat = pc.load_catalogue()
-    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 106
+    assert len([k for k in cat if k not in pc.EXTRA_CHECKS]) == 108
     assert cat["UP-05"]["severity"] == "BLOCKER"
     assert cat["DF-13"]["severity"] == "WARNING"
     assert cat["PAY-02"]["sources"][0].startswith("https://developer.apple.com")
@@ -533,3 +533,134 @@ def test_att_prompt_on_first_screen_is_a_question(tmp_path, capsys):
     _, data = run_json(root, capsys)
     assert "PR-17" not in ids(data, "LIKELY REJECTION")
     assert "PR-17" in json.dumps(data)
+
+
+def _with_strings(root, text):
+    d = root / "App" / "en.lproj"
+    d.mkdir()
+    (d / "Localizable.strings").write_text(text)
+
+
+def _asked(data, cid):
+    return [c for c in data["candidates"] if c["id"] == cid]
+
+
+def _finding(data, cid):
+    return [f for f in data["findings"] if f["id"] == cid]
+
+
+LOCATION_ROW = """import SwiftUI
+struct V: View { var body: some View {
+  Button {
+    Task { await monitor.requestWhenInUseAuthorization() }
+  } label: {
+    Text(String(localized: "place.ask"))
+  }
+} }
+"""
+
+
+def test_pr18_flags_an_allow_button_through_its_localized_value(tmp_path, capsys):
+    root = make_project(tmp_path, swift=LOCATION_ROW)
+    _with_strings(root, '"place.ask" = "Allow location";\n')
+    _, data = run_json(root, capsys)
+    assert "PR-18" in ids(data, "LIKELY REJECTION")
+    assert "Allow location" in _finding(data, "PR-18")[0]["message"]
+
+
+def test_pr18_passes_continue(tmp_path, capsys):
+    root = make_project(tmp_path, swift=LOCATION_ROW)
+    _with_strings(root, '"place.ask" = "Continue";\n')
+    _, data = run_json(root, capsys)
+    assert "PR-18" not in ids(data, "LIKELY REJECTION")
+
+
+def test_pr18_follows_a_local_function_from_a_first_run_page(tmp_path, capsys):
+    swift = """import SwiftUI
+struct V: View {
+  var body: some View {
+    Button { advance() } label: { Text("Allow Alarms & Reminders") }
+  }
+  func advance() { Task { await center.requestAuthorization() } }
+}
+"""
+    root = make_project(tmp_path, swift=swift)
+    _, data = run_json(root, capsys)
+    assert "PR-18" in ids(data, "LIKELY REJECTION")
+
+
+def test_pr18_follows_two_local_calls_with_the_title_on_a_ternary(tmp_path, capsys):
+    swift = """import SwiftUI
+struct V: View {
+  var body: some View {
+    Button {
+      advance()
+    } label: {
+      Text(last
+           ? String(localized: "first.allow")
+           : String(localized: "first.next"))
+    }
+  }
+  private func advance() {
+    if last { requestPermissions() }
+  }
+  private func requestPermissions() {
+    Task { _ = await center.requestAuthorization() }
+  }
+}
+"""
+    root = make_project(tmp_path, swift=swift)
+    _with_strings(root, '"first.allow" = "Allow Alarms & Reminders";\\n"first.next" = "Next";\\n')
+    _, data = run_json(root, capsys)
+    assert "Allow Alarms & Reminders" in _finding(data, "PR-18")[0]["message"]
+
+
+def test_pr18_allows_open_settings_and_ignores_unrelated_buttons(tmp_path, capsys):
+    swift = """import SwiftUI
+struct V: View { var body: some View {
+  Button("Enable dark mode") { dark = true }
+  Button("Open Settings") { Task { await store.requestAccess() } }
+} }
+"""
+    root = make_project(tmp_path, swift=swift)
+    _, data = run_json(root, capsys)
+    assert "PR-18" not in ids(data, "LIKELY REJECTION")
+
+
+def test_pr18_asks_about_text_that_names_the_answer(tmp_path, capsys):
+    root = make_project(tmp_path)
+    _with_strings(root, '"help" = "iOS asks whether the app may schedule alarms. Tap Allow.";\n')
+    _, data = run_json(root, capsys)
+    assert "PR-18" not in ids(data, "LIKELY REJECTION") and _asked(data, "PR-18")
+
+
+def test_pr19_weatherkit_without_attribution(tmp_path, capsys):
+    root = make_project(tmp_path, swift="import WeatherKit\nlet s = WeatherService.shared\n")
+    _, data = run_json(root, capsys)
+    assert "PR-19" in ids(data, "LIKELY REJECTION")
+
+
+def test_pr19_weatherkit_with_attribution_only_asks(tmp_path, capsys):
+    root = make_project(tmp_path, swift="import WeatherKit\nlet u = attribution.legalPageURL\n")
+    _, data = run_json(root, capsys)
+    assert "PR-19" not in ids(data, "LIKELY REJECTION") and _asked(data, "PR-19")
+
+
+def test_pr19_silent_without_weatherkit(tmp_path, capsys):
+    root = make_project(tmp_path)
+    _, data = run_json(root, capsys)
+    assert "PR-19" not in ids(data) and not _asked(data, "PR-19")
+
+
+def test_pr18_ignores_a_footer_after_the_button(tmp_path, capsys):
+    swift = """import SwiftUI
+struct V: View { var body: some View {
+  VStack {
+    Button("Continue") { Task { await center.requestAuthorization() } }
+    Text("Enable reminders to stay informed")
+  }
+} }
+"""
+    root = make_project(tmp_path, swift=swift)
+    _, data = run_json(root, capsys)
+    assert "PR-18" not in ids(data, "LIKELY REJECTION")

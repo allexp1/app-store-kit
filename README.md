@@ -14,6 +14,7 @@ You say one sentence. It does the rest, step by step, and stops only where Apple
 | "Is it working?" | Downloads Apple's analytics and shows which page converts, and what to test next |
 | "Apple rejected my app" | Maps each cited guideline to a fix and drafts the reply (you send it) |
 | "Answer the reviews" | Reports themes and crashes from reviews, drafts replies, sends only the ones you approve |
+| "Advertise it on Apple Ads" | Plans Brand, Category, Competitor and Discovery search campaigns from your target cost per install, creates them paused, starts each only on your yes, and proposes weekly bid and keyword changes |
 | "Add subscriptions", "run a beta", "change the price" | Subscriptions, external TestFlight with feedback triage, prices per country and pre-orders |
 
 ## Designed screenshot campaigns
@@ -114,6 +115,7 @@ prints or commits the key file.
   - `rejection.py` and `reviews.py`: App Review rejections; ratings and approval-gated review replies.
   - `subscriptions.py`, `testflight.py` and `pricing.py`: subscriptions, TestFlight betas and feedback, prices and
     availability.
+  - `apple_ads.py`: Apple Ads campaigns (created paused), reports and optimisation proposals.
 - `references/`: Apple's specs, review guidelines, App Store Connect fields, the API, privacy labels and copywriting.
 - `tests/`: `./test.sh` runs everything offline, without keys.
 

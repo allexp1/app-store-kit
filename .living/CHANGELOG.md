@@ -73,6 +73,40 @@ A refresh that finds nothing still logs `- No changes found`.
 - ADDED: App Review Help read in full (16 articles) and six pages hashed in scripts/rules.json: complete review, 2.3.3 majority rule, purpose strings, account deletion, removals, plus asset best practices — https://developer.apple.com/help/app-review/
 - CHANGED (author edit, requested by the user): precheck UP-09 (Apple's vague examples fail; short or period-less strings asked), new UP-19 (purpose strings per key and language), CS-03 (AI generation under 1.2, nudify BLOCKER unless a denylist, text generation asked), new DF-24 (2.5.19), MD-04/MD-13/MD-14 rows, PAY-01/AC-01/AC-07/DF-12/DF-21 texts; catalogue 105 checks. studio/spec.py fails a set where half or fewer panels show the app in use. render_creative.py lints asset text (2.3.14) with --evidence. lint_metadata.py MD-14 review-notes completeness (warnings) and a 4000-byte error, also an error in the asc_sync plan; asc_sync warns on a demo user without a password. rejection.py guides for 2.5.19 and 2.3.14; appeals one per rejected or removed app. References updated: review-guidelines, precheck-rules, rejection-handling (removals, expedite, appointments), story, creative-director, creative-assets, apple-specs, subscriptions, app-store-connect-fields. SKILL.md updated; ORIGINAL.sha256 re-baselined. Codex CLI produced the gap report and the review-notes checks.
 
+## 2026-10-17
+- CHANGED (fix, live run Kids Love Science): asc_sync read_iap sent the kit's IAP review screenshot to the version's v2 `inAppPurchaseImages`, which is the 1024×1024 promotional image; the uploads FAILED and the IAPs stayed MISSING_METADATA. The review screenshot now always goes to v1 `inAppPurchaseAppStoreReviewScreenshots` on the purchase (MD5 sourceFileChecksum) — https://developer.apple.com/documentation/appstoreconnectapi/post-v1-inapppurchaseappstorereviewscreenshots
+- CHANGED (fix): pricing.py read_live: manualPrices/automaticPrices return 404 for a new app with no price schedule; treated as empty.
+- CHANGED (fix): lint_metadata DF placeholder and precheck DF-01 flagged "todo" in Spanish/Portuguese copy ("em todo lugar"); TODO now matches in capitals only (precheck) or is skipped for es/pt/ca/gl (lint).
+- CHANGED (fix): release.py archive passes -project <scheme>.xcodeproj when iCloud conflict copies ("App 2.xcodeproj") sit beside the project.
+- CHANGED: precheck report header cites the App Review Guidelines of October 16, 2026.
+- OPEN: asc_sync has no IAP availability area; a new app's IAPs need POST /v1/inAppPurchaseAvailabilities (availableInNewTerritories + territories) or they stay MISSING_METADATA (done by hand on 2026-10-17). release.py archive has no --team-id for projects with an empty DEVELOPMENT_TEAM.
+- 2026-10-17 studio/scene.py: a device layer showing a tablet screen (aspect < 1.8) keeps the phone's height instead of its width (w is in phone widths), capped at 0.92 of the panel, so iPad slots no longer render tiny tablets.
+- 2026-10-17 studio/spec.py: the headline word count no longer splits Devanagari/Bengali…Sinhala/Thai words at vowel signs and viramas (a 6-word Hindi headline counted as 13).
+- 2026-10-18 studio/scene.py: the measure pass now waits for every image to load and decode before checking them (large iPad captures in an iCloud folder were reported "image did not load" about once per 30 renders).
+
+## 2026-10-18: no KIDS category id
+- `asc_sync.py`: "Kids" was accepted as a category and failed at apply (409 ENTITY_ERROR.RELATIONSHIP.INVALID). GET /v1/appCategories has no KIDS: an app enters the Kids Category through `age_rating.kidsAgeBand`. The plan now reports a Kids category as an error and asks for a real one (Education, Books).
+
 ## 2026-10-29
 - ADDED (author edit, requested by the user after a real rejection): pre-check PR-17 "ATT prompt reachable by App Review". Swipr 1.0.0 (22) was rejected under Guideline 2.1 Information Needed: "we are unable to locate the App Tracking Transparency permission request". The kit had passed PR-04 (ATT asked before the SDK starts) but never checked that a reviewer reaches the prompt; Swipr asked only at the first ad pause (second launch, 25 decisions). PR-17 flags a request gated by launch, session or action counts or the first ad; rejection.py triage now maps ATT messages to PR-17 with the code fix and the physical-device recording Apple asks for; review-notes item 10, the rejection table and the READINESS gate say the same — https://developer.apple.com/app-store/user-privacy-and-data-use/#permission-to-track , https://developer.apple.com/documentation/apptrackingtransparency
 - CHANGED: ORIGINAL.sha256 re-baselined to the edited SKILL.md; version 1.7.1.
+
+## 2026-11-02
+- Refresh: `snapshot_rules.py check` found 1 changed page (review-help-screenshots, 2.3.3); all others the same. ADDED to KNOWLEDGE.md: screenshots should be updated with each new version to match the current UI; allowed and disallowed overlays; status-bar platform references under 2.3.10. No conflict with SKILL.md (it already requires real screens from the submitted build) — https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots
+
+## 2026-11-09: from App Review on JetSetAlarm 1.0 (PRIMARY: the rejection message)
+
+- New pre-check PR-18 (5.1.1(iv), permission buttons must not say Allow) and PR-19 (5.2.5, WeatherKit attribution).
+- rejection.py maps 5.1.1(iv) and 5.2.5, keeps an earlier REJECTION.md, and names the setup when PyYAML is missing.
+- Rejection messages are saved one file per round. Live page: the Reply dialog has Attach File and Save Draft.
+
+## 2026-11-10: Apple Ads module (author edit, requested by the user)
+
+- ADDED: references/apple-ads.md (UA playbook), templates/apple-ads.example.yaml, scripts/apple_ads.py, tests/test_apple_ads.py — read from the Apple Ads help pages (PRIMARY) — https://ads.apple.com/app-store/help
+- ADDED: the API is the Apple Ads Platform API v1 (https://api.ads.apple.com/v1, header X-AP-Context: adAccountId); Campaign Management API v5 sunsets 2027-01-26 — https://developer.apple.com/documentation/apple-ads-platform-api
+- UNCONFIRMED, monitoring: v1 bulk keyword cap (kit uses 100), CampaignCreate endTime required vs optional (kit omits it), token form vs query parameters (kit uses form). Verify on the first live read-only run.
+- UNCONFIRMED: no documented target-CPA field for MAX_CONVERSIONS; the kit treats Maximize Conversions as a website step.
+- ADDED (live API, first real run on FitBeat, 2026-11-10): campaign names reject `|` (INVALID_FORMAT_CAMPAIGN_NAME); ad groups require `startTime` though CampaignCreate/AdGroupCreate docs don't say so (MISSING_REQUIRED_ATTRIBUTE); `POST /v1/ads` is refused for APPSTORE_SEARCH_RESULTS campaigns (AD_CAMPAIGN_SUPPLY_SOURCES_NOT_SUPPORTED), so the kit creates no creatives/ads there; one DEFAULT_PRODUCT_PAGE creative per app (DUPLICATE_DEFAULT_PRODUCT_PAGE); `/v1/negative-keywords/query` needs an adGroupId filter; campaign create without endTime works; token request as form body works; `/v1/acls` shape confirmed — https://api.ads.apple.com/v1
+
+## 2026-11-11
+- CHANGED (author edit, requested by the user): ORIGINAL.sha256 re-baselined to the edited SKILL.md, which now carries the Apple Ads journey and gates, PR-19 (WeatherKit attribution) in READINESS, one rejection message file per round, and the Attach File / Save Draft step in the rejection reply.

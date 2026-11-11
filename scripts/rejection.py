@@ -31,7 +31,12 @@ import pathlib
 import re
 import sys
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    sys.exit("rejection.py needs PyYAML. Set it up once: python3 -m venv ~/.cache/app-store-kit && "
+             "~/.cache/app-store-kit/bin/pip install -r " + str(pathlib.Path(__file__).resolve().parent.parent /
+                                                                 "requirements.txt"))
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -165,6 +170,12 @@ GUIDES = {
                   "fix": "Rewrite the purpose strings to say what the data is used for, with an example; don't "
                          "block the app when a permission is denied.",
                   "evidence": "The new purpose strings.", "reply": ""},
+    "5.1.1(iv)": {"title": "Access to permissions", "rules": ["PR-18", "PR-06"], "build": True,
+                  "fix": "Label a button that leads to a system permission request Continue or Next, never Allow or "
+                         "Enable, and let its header or footer say what the feature does. Remove any text that tells "
+                         "people which answer to give.",
+                  "evidence": "The relabelled buttons in the new build.",
+                  "reply": "[Which buttons changed and what they say now.]"},
     "5.1.1(v)": {"title": "Account Sign-In", "rules": ["AC-01", "AC-04", "AC-02"], "build": True,
                  "fix": "Offer account deletion inside the app (not only a link to email support), revoke Sign in "
                         "with Apple tokens on deletion, and let people use features that don't need an account "
@@ -185,6 +196,9 @@ GUIDES = {
     "1.5": {"title": "Developer Information", "rules": ["DF-05", "MD-09"], "build": False,
             "fix": "A working support URL with contact details, in the app and in App Store Connect.",
             "evidence": "The support page, live.", "reply": ""},
+    "5.2.5": {"title": "Apple Products", "rules": ["DF-21"], "build": True,
+              "fix": "Remove anything that looks like an Apple app, interface or advertising theme.",
+              "evidence": "Screens of the change.", "reply": ""},
     "5.2": {"title": "Intellectual Property", "rules": ["CS-11", "DF-21"], "build": True,
             "fix": "Remove third-party marks or content you have no rights to, or attach proof of the rights.",
             "evidence": "The licence or permission (attach it to the reply).",
@@ -311,6 +325,14 @@ def precheck_results(kit):
     return res
 
 
+WEATHER_MSG = re.compile(r"WeatherKit|Apple Weather", re.I)
+WEATHER_GUIDE = {
+    "fix": "Show the Apple Weather mark and a link to Apple's other data sources wherever WeatherKit data appears "
+           "(WeatherService.attribution). If the app does not use WeatherKit, say so in the reply and the review notes.",
+    "evidence": "A screen recording from a PHYSICAL device showing where the weather appears, with the mark and the "
+                "link. Attach it in the reply and to App Review Information.",
+    "reply": "[Where the weather appears, where the mark and link are, and the attached recording.]",
+}
 ATT_MSG = re.compile(r"App Tracking Transparency|AppTrackingTransparency|tracking permission request", re.I)
 ATT_GUIDE = {
     "fix": "Make the ATT prompt appear in the first session of a fresh install, on the first real screen and after "
@@ -339,6 +361,10 @@ def triage(parsed, cat, prechecks=None):
             gd = dict(gd or {}, **ATT_GUIDE)
             rules = ["PR-17", "PR-04"] + [r for r in rules if r not in ("PR-17", "PR-04")]
             info = info and prechecks.get("PR-17") == "PASS"
+        if WEATHER_MSG.search(g["text"]):
+            gd = dict(gd or {}, **WEATHER_GUIDE)
+            rules = ["PR-19"] + [r for r in rules if r != "PR-19"]
+            info = info and prechecks.get("PR-19") == "PASS"
         items.append({
             "id": g["id"], "title": g["title"] or (gd or {}).get("title", ""), "known": gd is not None,
             "info_needed": info, "build": (gd or {}).get("build", True) and not info,
@@ -474,6 +500,8 @@ def render(parsed, t, info, draft, source, decision, today):
     if t["path"] == "fix" and not t["metadata_only"]:
         L += ["- [ ] New build: `release.py bump` (build number up), `archive`, `upload --yes`, `wait`",
               "- [ ] Select it and update the review notes: `asc_sync.py plan KIT --only build,review`, then `apply --yes`",
+              "- [ ] In the Reply dialog: put a requested recording under Attach File, and keep the text on Save Draft "
+              "until the new build is attached",
               "- [ ] Resubmit: `asc_sync.py submit KIT --yes` (the owner's yes)"]
     elif t["path"] == "fix":
         L += ["- [ ] Metadata: `asc_sync.py plan KIT --only text,media`, then `apply --yes`",
@@ -522,7 +550,11 @@ def cmd_triage(kit, args, today=None):
     draft = draft_reply(t, decision, info, load_blocks(kit))
     pv = pvals(kit)
     md = cg.mask(render(parsed, t, info, draft, "stdin" if src == "-" else pathlib.Path(src).name, decision, today), pv)
-    (pathlib.Path(kit) / REPORT).write_text(md)
+    out = pathlib.Path(kit) / REPORT
+    if out.exists() and out.read_text() != md:  # an earlier round's report is kept, not overwritten
+        stamp = dt.datetime.fromtimestamp(out.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
+        out.rename(out.with_name(f"REJECTION-{stamp}.md"))
+    out.write_text(md)
     js = {"triaged": today, "fields": parsed["fields"], "suggested": t["path"], "decision_drafted": decision,
           "bug_fix_offer": parsed["bug_fix_offer"], "metadata_only": t["metadata_only"],
           "guidelines": [{k: i[k] for k in ("id", "title", "build", "info_needed", "known")} |
@@ -629,8 +661,8 @@ def cmd_status(client, kit, args):
     rejected_meta = any(v["appVersionState"] in META_STATES for v in vrows)
     if unresolved or any(v["appVersionState"] in STATE_HINTS for v in vrows):
         print("Next: open App Store Connect › Apps › the app › App Review (View App Review Issues & Messages) › "
-              "Resolve, copy Apple's message into KIT/rejection-message.txt, then run "
-              "`rejection.py triage KIT --message KIT/rejection-message.txt`." +
+              "Resolve, copy Apple's message into KIT/rejection-message-<date>.txt, then run "
+              "`rejection.py triage KIT --message KIT/rejection-message-<date>.txt`." +
               (" Metadata only: no new build needed." if rejected_meta else ""))
     else:
         print("No unresolved App Review issues.")

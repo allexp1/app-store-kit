@@ -230,11 +230,18 @@ def read_live(client, app):
     if schedule:
         sid = segment(schedule["id"])
         if not base:
-            base = (client.get(f"/v1/appPriceSchedules/{sid}/baseTerritory").get("data") or {}).get("id")
+            base = (optional(client, f"/v1/appPriceSchedules/{sid}/baseTerritory") or {}).get("id")
         for kind in ("manualPrices", "automaticPrices"):
-            rows, included = client.get_all(f"/v1/appPriceSchedules/{sid}/{kind}",
-                                           {"include": "appPricePoint,territory", "limit": 200},
-                                           include_included=True)
+            # A new app answers the schedule GET with a stub, then 404s its rows ("no resource of type 'null'",
+            # live 2026-10-17): no price has been set yet.
+            try:
+                rows, included = client.get_all(f"/v1/appPriceSchedules/{sid}/{kind}",
+                                               {"include": "appPricePoint,territory", "limit": 200},
+                                               include_included=True)
+            except asc_api.ASCError as error:
+                if error.status != 404:
+                    raise
+                rows, included = [], []
             points = {p["id"]: p for p in included if p["type"] == "appPricePoints"}
             for row in rows:
                 pid = rel_id(row, "appPricePoint")

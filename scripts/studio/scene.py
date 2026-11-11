@@ -409,9 +409,12 @@ def build(spec, locale, slot_id, W, H, layout, finfo, font_css, fit=None, mirror
         elif t == "device":
             uri, sw, sh = ctx.shot(L["screen"])
             model = L.get("model", dev["model"] if not slot_id.startswith("ipad") else "ipad")
+            width = ctx.U(L.get("w", 0.78))
+            if sh / sw < 1.8:  # a tablet screen: keep the phone's height (w is in phone widths), within the panel
+                width = min(width * 2.17 / (sh / sw), 0.92 * ctx.W)
             parts.append(devices.device_html(
                 did=f"dev{i}", screen_uri=uri, aspect=sh / sw, cx=ctx.X(L["x"]), cy=ctx.Y(L["y"]),
-                width=ctx.U(L.get("w", 0.78)), model=model, finish=L.get("finish", dev["finish"]),
+                width=width, model=model, finish=L.get("finish", dev["finish"]),
                 rotate=ctx.rot(L.get("rotate")), focal=L.get("focal", dev["focal"]),
                 shadow=L.get("shadow", dev["shadow"]), glare=L.get("glare", dev["glare"]),
                 island=L.get("island"), light=(360 - dev["light"]) % 360 if mirror else dev["light"],
@@ -557,6 +560,10 @@ MEASURE_JS = r"""<script>
   const out = {texts: [], els: [], fonts: {}, ok: true};
   try {
     await document.fonts.ready;
+    // large captures (several MB, often in a synced folder) can still be loading here: wait for every image
+    await Promise.race([new Promise(r => setTimeout(r, 8000)),
+      Promise.all([...document.images].filter(i => !i.complete).map(i =>
+        new Promise(r => { i.addEventListener('load', r, {once: true}); i.addEventListener('error', r, {once: true}); })))]);
     const fams = new Set();
     for (const el of document.querySelectorAll('[data-fit]')) {
       const max = +el.dataset.maxLines, min = +el.dataset.min, lh = +el.dataset.lh;
