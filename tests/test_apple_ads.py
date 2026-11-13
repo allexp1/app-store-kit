@@ -62,6 +62,9 @@ class FakeAds:
             return result
         return 200, {"ratelimit-remaining": "100"}, json.dumps(result).encode()
 
+    def _campaign(self, cid):
+        return next((c for k, c in self.campaigns.items() if str(k) == str(cid)), {})
+
     def query(self, rows, data):
         for f in (data or {}).get("filters", []):
             rows = [r for r in rows if str(r.get(f["field"])) == str(f["value"])]
@@ -98,9 +101,18 @@ class FakeAds:
             return {"result": rows, "pagination": {"totalCount": len(rows)}}
         if path.startswith("/v1/reports/apps/"):
             kind = path.split("/")[4]
-            cid = next(f["value"] for f in data["filters"] if f["field"] == "campaignId")
             assert data["timeRange"]["timeZone"] == "ORTZ"
-            return {"result": {"rows": self.reports[kind].get(str(cid), [])}, "pagination": {"totalCount": 1}}
+            fields = {f["field"]: f["value"] for f in data.get("filters") or []}
+            if kind == "campaigns":   # live API (2026-11-13): campaignId is an unsupported filter here
+                if "campaignId" in fields:
+                    return 400, {}, json.dumps({"error": {"code": "VALIDATION_ERROR", "message": "INVALID_FIELD_ATTRIBUTE campaignId"}}).encode()
+                adam = fields.get("promotedObjectId")
+                rows = [r for cid, rs in self.reports[kind].items() for r in rs
+                        if adam is None or str(self._campaign(cid).get("promotedObjectId", adam)) == str(adam)]
+                return {"result": {"rows": rows}, "pagination": {"totalCount": len(rows)}}
+            if "campaignId" not in fields:  # ... and required for keywords and search terms
+                return 400, {}, json.dumps({"error": {"code": "VALIDATION_ERROR", "message": "campaignId filter is required"}}).encode()
+            return {"result": {"rows": self.reports[kind].get(str(fields["campaignId"]), [])}, "pagination": {"totalCount": 1}}
         if path == "/v1/creatives/query":
             return self.query(list(self.creatives.values()), data)
         if method == "POST" and path == "/v1/creatives":
@@ -387,7 +399,8 @@ def seed_reports(fake):
     cat, disc = by_name["Example App - Category - US"], by_name["Example App - Discovery - US"]
     fake.reports["keywords"][str(cat)] = [kw_row(kws["budget planner/EXACT"], 30, 60, 20),     # CPA 1.50: raise
                                           kw_row(kws["expense tracker/EXACT"], 9, 20, 0)]       # 9 > 2 x 3: pause
-    fake.reports["campaigns"][str(cat)] = [{"totalMetrics": {"localSpend": {"amount": "39", "currency": "USD"},
+    fake.reports["campaigns"][str(cat)] = [{"metadata": {"id": cat},
+                                            "totalMetrics": {"localSpend": {"amount": "39", "currency": "USD"},
                                                              "impressions": 2000, "taps": 80, "tapInstalls": 20}}]
     fake.reports["searchterms"][str(disc)] = [
         {"metadata": {"searchTermText": "money planner", "searchTermSource": "AUTO"},
@@ -424,6 +437,22 @@ def test_optimize_proposes_and_changes_nothing(kit, fake):
     assert (bid["from"], bid["to"]) == ("1.20", "1.38")
     assert "Nothing has been changed" in (kit / "apple-ads-proposals.md").read_text()
     assert "Example App - Category - US" in (kit / "apple-ads-report.json").read_text()
+
+
+def test_report_reads_campaign_totals_without_a_campaign_filter(kit, fake):
+    """Live 2026-11-13: the campaigns report refuses a campaignId filter; totals come from one per-app query."""
+    run(kit, fake, "plan")
+    run(kit, fake, "apply", "--yes")
+    cat, disc, _ = seed_reports(fake)
+    n = len(fake.calls)
+    assert run(kit, fake, "report", "--days", "4") == 0
+    camp_calls = [c for c in fake.calls[n:] if c[1] == "/v1/reports/apps/campaigns/query"]
+    assert len(camp_calls) == 1
+    assert {f["field"] for f in camp_calls[0][2]["filters"]} == {"promotedObjectId"}
+    rep = json.loads((kit / "apple-ads-report.json").read_text())
+    totals = {c["id"]: c["totals"] for c in rep["campaigns"]}
+    assert totals[cat] == {"impressions": 2000, "taps": 80, "installs": 20, "spend": "39.00", "cpa": "1.95"}
+    assert totals[disc]["spend"] == "0.00" and totals[disc]["installs"] == 0
 
 
 def test_bids_never_exceed_max_bid(kit, fake):

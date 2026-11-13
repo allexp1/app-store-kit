@@ -213,7 +213,7 @@ deprecated and sunsets on 2027-01-26, so the kit does not use it.
 | create | `POST /v1/campaigns` (status `PAUSED`, `MANUAL_CPT`/`TAP`, `supplyPlacement APPSTORE_SEARCH_RESULTS`, Sapin answer for FR; name without `\|`), `/v1/adgroups` (`CPT`, Search Match flag, bid, `startTime` required). No creatives or ads: search results serve the default product page, and the API refuses Ad objects there |
 | keywords | `POST /v1/keywords/bulk-create`, `/v1/negative-keywords/bulk-create`, `/v1/keywords/bulk-update` (bid, status only; text and match type never change), in chunks of 100 with `allowPartialSuccess: false` |
 | switch | `PUT /v1/campaigns/{id}` with `{"status": "ENABLED" | "PAUSED"}` or a new `dailyBudget` (partial update), then `GET` to read it back |
-| reports | `POST /v1/reports/apps/{campaigns,keywords,searchterms}/query` with `timeRange {start, end, timeZone ORTZ, granularity DAILY}` and a `campaignId` filter |
+| reports | `POST /v1/reports/apps/{campaigns,keywords,searchterms}/query` with `timeRange {start, end, timeZone ORTZ, granularity DAILY}`. The campaigns report refuses a `campaignId` filter (filter on `promotedObjectId`, match rows by `metadata.id`; campaigns with no activity are absent); the keywords and searchterms reports require one |
 
 Learned on the first live run (2026-11-10): campaign names may not contain `|`; ad groups need `startTime`
 (`yyyy-MM-ddTHH:mm:ss.SSS`); `POST /v1/ads` fails for search results campaigns (`AD_CAMPAIGN_SUPPLY_SOURCES_NOT_SUPPORTED`);

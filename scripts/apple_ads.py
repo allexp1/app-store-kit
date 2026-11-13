@@ -767,9 +767,13 @@ def collect(client, cfg, days, today=None):
     if days > 1:
         span["granularity"] = "DAILY"
     out = {"from": span["start"], "to": span["end"], "days": days, "currency": cfg["currency"], "campaigns": []}
+    # The campaigns report refuses a campaignId filter (INVALID_FIELD_ATTRIBUTE) and lists only campaigns with
+    # activity, so it is read once per app; the keyword and search term reports require the campaignId filter.
+    by_id = {str((r.get("metadata") or {}).get("id")): r for r in client.query(
+        "/v1/reports/apps/campaigns/query", {"timeRange": span, "filters": [eq("promotedObjectId", str(cfg["adam_id"]))]})}
     for c in app_campaigns(client, cfg["adam_id"]):
         f = {"timeRange": span, "filters": [eq("campaignId", str(c["id"]))]}
-        crow = client.query("/v1/reports/apps/campaigns/query", f)
+        crow = [by_id[str(c["id"])]] if str(c["id"]) in by_id else []
         bids = {r.get("id"): format(amount_of(r.get("bid")), "f") if r.get("bid") else None
                 for r in client.query("/v1/keywords/query", {"filters": [eq("campaignId", c["id"])]})}
         kws = [{"id": (r.get("metadata") or {}).get("id"), "text": (r.get("metadata") or {}).get("text"),
