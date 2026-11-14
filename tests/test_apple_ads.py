@@ -741,3 +741,30 @@ def test_keyword_chunks_that_landed_are_not_sent_again(kit, fake, monkeypatch):
     assert run(kit, fake, "apply", "--yes") == 0
     keys = [(k["adGroupId"], k["text"], k["matchType"]) for k in fake.keywords.values()]
     assert len(keys) == len(set(keys)) == planned
+
+
+def test_edited_keywords_after_a_failed_chunk_are_all_sent(kit, fake, monkeypatch):
+    """Codex round 3: chunk records are named by content, so an edit before the retry cannot skip new keywords."""
+    monkeypatch.setattr(aa, "BULK_CHUNK", 1)
+    run(kit, fake, "plan")
+    original, groups = fake.bulk, set()
+
+    def flaky(store, data, check):
+        if store is fake.keywords:
+            gid = data["items"][0]["data"]["adGroupId"]
+            if gid in groups:
+                return 400, {}, json.dumps({"error": {"code": "INVALID", "message": "boom"}}).encode()
+            groups.add(gid)
+        return original(store, data, check)
+    monkeypatch.setattr(fake, "bulk", flaky)
+    assert run(kit, fake, "apply", "--yes") == 1
+    monkeypatch.setattr(fake, "bulk", original)
+    cfg = yaml.safe_load((kit / "apple-ads.yaml").read_text())
+    cfg["keywords"]["category"] = list(reversed(cfg["keywords"]["category"]))    # same words, new order
+    (kit / "apple-ads.yaml").write_text(yaml.safe_dump(cfg))
+    assert run(kit, fake, "plan") == 0
+    planned = {(o["ref"].rsplit("/", 1)[0], i["text"], i["matchType"])
+               for o in json.loads((kit / "apple-ads-plan.json").read_text())["ops"] if o["op"] == "keywords" for i in o["items"]}
+    assert run(kit, fake, "apply", "--yes") == 0
+    texts = {(k["text"], k["matchType"]) for k in fake.keywords.values()}
+    assert {(t, mt) for _, t, mt in planned} <= texts

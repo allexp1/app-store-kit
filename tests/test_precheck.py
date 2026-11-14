@@ -535,6 +535,38 @@ def test_att_prompt_on_first_screen_is_a_question(tmp_path, capsys):
     assert "PR-17" in json.dumps(data)
 
 
+def test_att_helper_with_one_ungated_caller_is_a_question(tmp_path, capsys):
+    """Codex 2026-11-14: a helper called from onboarding and from a gated ad flow is reachable, not deferred."""
+    swift = ('import AppTrackingTransparency\nimport GoogleMobileAds\n'
+             'func askTracking() async {\n'
+             '  _ = await ATTrackingManager.requestTrackingAuthorization()\n}\n'
+             'func onboardingDone() async {\n'
+             '  await askTracking()\n}\n\n\n\n\n\n'
+             'func maybeShowAd(launchCount: Int) async {\n'
+             '  guard launchCount > 3 else { return }\n'
+             '  await askTracking()\n'
+             '  _ = await MobileAds.shared.start()\n}\n')
+    root = make_project(tmp_path, resolved=ATT_PINS, swift=swift,
+                        info={"NSUserTrackingUsageDescription": "Ads may use your activity in other apps."})
+    _, data = run_json(root, capsys)
+    assert "PR-17" not in ids(data, "LIKELY REJECTION")
+    assert "PR-17" in json.dumps(data)
+
+
+def test_att_helper_whose_only_caller_is_gated_is_flagged(tmp_path, capsys):
+    swift = ('import AppTrackingTransparency\nimport GoogleMobileAds\n'
+             'func askTracking() async {\n'
+             '  _ = await ATTrackingManager.requestTrackingAuthorization()\n}\n\n\n\n\n\n'
+             'func maybeShowAd(launchCount: Int) async {\n'
+             '  guard launchCount > 3 else { return }\n'
+             '  await askTracking()\n'
+             '  _ = await MobileAds.shared.start()\n}\n')
+    root = make_project(tmp_path, resolved=ATT_PINS, swift=swift,
+                        info={"NSUserTrackingUsageDescription": "Ads may use your activity in other apps."})
+    _, data = run_json(root, capsys)
+    assert "PR-17" in ids(data, "LIKELY REJECTION")
+
+
 def _with_strings(root, text):
     d = root / "App" / "en.lproj"
     d.mkdir()

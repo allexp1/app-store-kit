@@ -710,7 +710,8 @@ def _run_ops(client, kit, plan, live, ids, made):
             for n in range(0, len(items), BULK_CHUNK):
                 # Each chunk commits on its own, so it is recorded on its own: a retry after a later chunk failed
                 # must not resend keywords Apple already created.
-                cref = f"{op['ref']}#{n // BULK_CHUNK}"
+                # Named by content, not position: a YAML edit between the failure and the retry gives new names.
+                cref = f"{op['ref']}#{digest(op['items'][n:n + BULK_CHUNK])[:16]}"
                 if cref not in (live.get("done") or []):
                     client.bulk(path, items[n:n + BULK_CHUNK])
                     _done(client, kit, live, cref)

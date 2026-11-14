@@ -1443,8 +1443,11 @@ def chk_att_reachable(p, r, opt):
         name, body = _enclosing(p, site)
         hits = _gated(body)
         if name and not hits:
-            for c in (l for l in p.grep(rf"\b{re.escape(name)}\s*\(") if not FUNC_RX.search(l.text)):
-                hits += _gated([l for l in p.code if l.path == c.path and abs(l.no - c.no) <= 4])
+            # The helper is deferred only when every call of it is: one ungated caller (onboarding) reaches it.
+            per_call = [_gated([l for l in p.code if l.path == c.path and abs(l.no - c.no) <= 4])
+                        for c in p.grep(rf"\b{re.escape(name)}\s*\(") if not FUNC_RX.search(c.text)]
+            if per_call and all(per_call):
+                hits = [h for call in per_call for h in call]
         if not hits:
             break   # one site a reviewer reaches without a threshold is enough
         gated_sites += 1
