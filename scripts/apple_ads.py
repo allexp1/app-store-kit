@@ -727,6 +727,13 @@ def _run_ops(client, kit, plan, live, ids, made):
         ids[op["ref"]] = result["id"]
         if op["op"] == "campaign":
             if not client.dry_run:
+                # A new campaign replaces any older one of the same name (deleted in the website, or in another
+                # account): forget that one's finished steps and ids, or its keywords would count as already sent.
+                old = lambda ref: ref.startswith(op["ref"] + "/")
+                live["done"] = [r for r in live.get("done") or [] if r != op["ref"] and not old(r)]
+                live["ids"] = {r: v for r, v in (live.get("ids") or {}).items() if not old(r)}
+                for r in [r for r in ids if old(r)]:
+                    del ids[r]
                 live["created"].append({"id": result["id"], "name": op["body"]["name"], "day": plan["day"]})
                 made.append(op["body"]["name"])
                 _done(client, kit, live, op["ref"], result["id"])

@@ -689,6 +689,7 @@ def test_deleted_campaigns_are_rebuilt_not_skipped_by_old_records(kit, fake):
     """Codex 2026-11-14: done records of campaigns deleted in Apple Ads used to empty the next plan."""
     run(kit, fake, "plan")
     assert run(kit, fake, "apply", "--yes") == 0
+    first = (len(fake.keywords), len(fake.negatives))
     for store in (fake.campaigns, fake.groups, fake.keywords, fake.negatives):
         store.clear()                                                              # deleted in the website
     assert run(kit, fake, "plan") == 0
@@ -696,6 +697,25 @@ def test_deleted_campaigns_are_rebuilt_not_skipped_by_old_records(kit, fake):
     assert len(plan["campaigns"]) == 4 and sum(o["op"] == "campaign" for o in plan["ops"]) == 4
     assert run(kit, fake, "apply", "--yes") == 0
     assert len(fake.campaigns) == 4 and len(fake.groups) == 5
+    assert (len(fake.keywords), len(fake.negatives)) == first and all(first)   # Codex round 2: not left empty
+    assert run(kit, fake, "plan") == 0
+    assert not json.loads((kit / "apple-ads-plan.json").read_text())["ops"]
+
+
+def test_interrupted_rebuild_finishes_the_new_campaign(kit, fake):
+    run(kit, fake, "plan")
+    assert run(kit, fake, "apply", "--yes") == 0
+    first = (len(fake.keywords), len(fake.negatives))
+    for store in (fake.campaigns, fake.groups, fake.keywords, fake.negatives):
+        store.clear()
+    run(kit, fake, "plan")
+    fake.fail_on = ("POST", "/v1/adgroups")
+    assert run(kit, fake, "apply", "--yes") == 1                                 # rebuild stops half-way
+    fake.fail_on = None
+    assert run(kit, fake, "plan") == 0
+    assert run(kit, fake, "apply", "--yes") == 0
+    assert len(fake.campaigns) == 4 and len(fake.groups) == 5
+    assert (len(fake.keywords), len(fake.negatives)) == first
 
 
 def test_keyword_chunks_that_landed_are_not_sent_again(kit, fake, monkeypatch):
