@@ -683,3 +683,41 @@ def test_half_built_campaign_is_finished_by_the_next_plan(kit, fake, capsys):
     assert len(texts) == len(set(texts))                                           # negatives not repeated
     assert run(kit, fake, "plan") == 0
     assert not json.loads((kit / "apple-ads-plan.json").read_text())["ops"]
+
+
+def test_deleted_campaigns_are_rebuilt_not_skipped_by_old_records(kit, fake):
+    """Codex 2026-11-14: done records of campaigns deleted in Apple Ads used to empty the next plan."""
+    run(kit, fake, "plan")
+    assert run(kit, fake, "apply", "--yes") == 0
+    for store in (fake.campaigns, fake.groups, fake.keywords, fake.negatives):
+        store.clear()                                                              # deleted in the website
+    assert run(kit, fake, "plan") == 0
+    plan = json.loads((kit / "apple-ads-plan.json").read_text())
+    assert len(plan["campaigns"]) == 4 and sum(o["op"] == "campaign" for o in plan["ops"]) == 4
+    assert run(kit, fake, "apply", "--yes") == 0
+    assert len(fake.campaigns) == 4 and len(fake.groups) == 5
+
+
+def test_keyword_chunks_that_landed_are_not_sent_again(kit, fake, monkeypatch):
+    """Codex 2026-11-14: each bulk chunk commits on its own, so a retry must skip the chunks Apple already has."""
+    monkeypatch.setattr(aa, "BULK_CHUNK", 1)
+    run(kit, fake, "plan")
+    planned = sum(len(o["items"]) for o in json.loads((kit / "apple-ads-plan.json").read_text())["ops"] if o["op"] == "keywords")
+    original, groups = fake.bulk, set()
+
+    def flaky(store, data, check):   # the second chunk of the first ad group with two or more keywords fails
+        if store is fake.keywords:
+            gid = data["items"][0]["data"]["adGroupId"]
+            if gid in groups:
+                return 400, {}, json.dumps({"error": {"code": "INVALID", "message": "boom"}}).encode()
+            groups.add(gid)
+        return original(store, data, check)
+    monkeypatch.setattr(fake, "bulk", flaky)
+    assert run(kit, fake, "apply", "--yes") == 1
+    landed = len(fake.keywords)
+    assert landed >= 1
+    monkeypatch.setattr(fake, "bulk", original)
+    assert run(kit, fake, "plan") == 0
+    assert run(kit, fake, "apply", "--yes") == 0
+    keys = [(k["adGroupId"], k["text"], k["matchType"]) for k in fake.keywords.values()]
+    assert len(keys) == len(set(keys)) == planned

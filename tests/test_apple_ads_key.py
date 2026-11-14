@@ -56,6 +56,17 @@ def test_write_connect_keeps_other_lines_and_replaces_old_block(tmp_path):
                                                  "ad_account_id": "42"}
 
 
+def test_write_connect_skips_the_old_block_across_unindented_comments(tmp_path):
+    """Codex 2026-11-14: a comment inside the old block used to end the skip and orphan the fields after it."""
+    (tmp_path / "connect.yaml").write_text("app: x\napple_ads:\n  client_id: old\n# about the key\n  key_id: old\n"
+                                           "# about other\nother: 1\n")
+    ak.write_connect(tmp_path, {"client_id": "c", "team_id": "t", "key_id": "k", "key_path": "/p", "ad_account_id": "42"})
+    text = (tmp_path / "connect.yaml").read_text()
+    assert "old" not in text and "# about the key" not in text and "# about other\nother: 1\n" in text
+    doc = yaml.safe_load(text)
+    assert doc["other"] == 1 and doc["apple_ads"]["key_id"] == "k"
+
+
 @needs_openssl
 def test_full_run_makes_a_private_key_and_saves_ids(tmp_path, capsys):
     kit, keys = tmp_path / "kit", tmp_path / "keys"

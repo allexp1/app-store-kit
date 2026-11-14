@@ -552,7 +552,9 @@ def build_plan(kit, cfg, account, existing, today=None, live=None):
     create = [c for c in campaigns if c["name"] not in have or c["name"] in resume]
     # Search results campaigns serve the app's default product page on their own: Apple's API refuses Ad objects
     # there (AD_CAMPAIGN_SUPPLY_SOURCES_NOT_SUPPORTED, live 2026-11-10), so the kit creates no creatives or ads.
+    owner = {}  # op ref -> campaign name
     for c in create:
+        first = len(ops)
         cref = f"campaign:{c['name']}"
         body = {"name": c["name"], "adAccountId": int(account["id"]), "promotedObjectType": "APPSTORE_APP",
                 "promotedObjectId": cfg["adam_id"], "billingEvent": "TAPS", "status": "PAUSED",
@@ -580,7 +582,10 @@ def build_plan(kit, cfg, account, existing, today=None, live=None):
             if g["keywords"]:
                 ops.append({"op": "keywords", "ref": f"{gref}/keywords", "items": [
                     {"adGroupId": gref, "text": k["text"], "matchType": k["match"], "status": "ENABLED"} for k in g["keywords"]]})
-    ops = [o for o in ops if o["ref"] not in done]
+        owner.update({o["ref"]: c["name"] for o in ops[first:]})
+    # A finished step counts only for a campaign this kit made that is still live in this account: after the campaign
+    # was deleted, or with another ad account, the old record must not suppress the steps that rebuild it.
+    ops = [o for o in ops if o["ref"] not in done or owner[o["ref"]] not in resume]
     finished = {c["name"] for c in create if c["name"] in resume and not any(
         o["ref"].startswith(f"campaign:{c['name']}") for o in ops)}
     create = [c for c in create if c["name"] not in finished]
@@ -701,7 +706,14 @@ def _run_ops(client, kit, plan, live, ids, made):
     for op in plan["ops"]:
         if op["op"] in ("keywords", "negatives"):
             path = "/v1/keywords/bulk-create" if op["op"] == "keywords" else "/v1/negative-keywords/bulk-create"
-            client.bulk(path, [_fill(i, ids) for i in op["items"]])
+            items = [_fill(i, ids) for i in op["items"]]
+            for n in range(0, len(items), BULK_CHUNK):
+                # Each chunk commits on its own, so it is recorded on its own: a retry after a later chunk failed
+                # must not resend keywords Apple already created.
+                cref = f"{op['ref']}#{n // BULK_CHUNK}"
+                if cref not in (live.get("done") or []):
+                    client.bulk(path, items[n:n + BULK_CHUNK])
+                    _done(client, kit, live, cref)
             _done(client, kit, live, op["ref"])
             continue
         path = {"campaign": "/v1/campaigns", "adgroup": "/v1/adgroups"}[op["op"]]

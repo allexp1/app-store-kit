@@ -104,14 +104,21 @@ def write_connect(kit, values):
     path = pathlib.Path(kit) / "connect.yaml"
     lines = path.read_text().splitlines() if path.exists() else []
     out, skipping = [], False
+    held = []  # unindented comments met inside the old block: kept only if a top-level key follows them
     for line in lines:
         if re.match(r"^apple_ads\s*:", line):
-            skipping = True
+            skipping, held = True, []
             continue
         if skipping and (line.startswith((" ", "\t")) or not line.strip()):
+            held = []  # a comment followed by more of the block belonged to the block
+            continue
+        if skipping and line.startswith("#"):
+            held.append(line)  # a comment does not end a YAML mapping; keep skipping
             continue
         skipping = False
-        out.append(line)
+        out += held + [line]
+        held = []
+    out += held
     while out and not out[-1].strip():
         out.pop()
     block = ["", "# Apple Ads API (scripts/apple_ads_key.py). Ids only; the private key stays at key_path, outside git.",
