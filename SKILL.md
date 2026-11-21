@@ -210,7 +210,10 @@ kit/release-history.yaml       version, build, date and commit of each release (
   app mid-gesture (tilt, stamp, colour wash, next item underneath), not at rest, and make the swipe the app preview,
   which plays first. A resting screen with buttons doesn't say "swipe".
 - Show visual directions side by side and let the human pick one before producing every size: `campaign.py concepts`
-  renders six as a contact sheet from the real screens (`references/creative-director.md`). When the owner shares
+  renders six as a contact sheet from the real screens (`references/creative-director.md`). The picker chooses six
+  layouts that differ in structure, each in its own palette family, and the engines draw pictograms that fit each
+  panel's story (motifs: a dose gets capsules, a landing a plane); trends and evidence in
+  `references/screenshot-trends.md`. When the owner shares
   reference sets, name the technique in each (big type, before/after, glass, stickers, an accent word in a pill,
   ring or serif, feature chips, a sourced stat with its footnote) and map it to an engine, `accent_style` or
   storyboard field; read references for technique only, never copy them, and never add laurels or badges without
@@ -585,7 +588,7 @@ When live labels, order or choices differ from `references/app-store-connect-fie
 | `scripts/subscriptions.py` | `check\|status\|plan\|apply\|submit KIT [--dry-run] [--yes] [--price-increase-ok]`: groups, products, localizations, prices, offers, review screenshots; no deletes |
 | `scripts/testflight.py` | `status\|plan\|apply\|submit-beta\|feedback KIT`; `plan --build N [--submit-beta]`; writes need `--yes`; `feedback` → `TESTFLIGHT-FEEDBACK.md` |
 | `scripts/pricing.py` | `check\|status\|plan\|apply KIT [--dry-run] [--yes] [--remove-territories-ok]`: prices from Apple's price points, scheduled changes, territories, pre-orders |
-| `scripts/campaign.py` | `analyze`, `init KIT`, `check`, `concepts` (six directions → contact sheet), `render [--engine] [--locale]... [--slot]... [--panel N] [--install KIT] [--offline]`, `eject`, `validate OUT`, `canvas` / `canvas-link` (Claude Design), `review-page OUT` (one HTML page when the canvas isn't available), `engines`, `presets`; code in `scripts/studio/` |
+| `scripts/campaign.py` | `analyze`, `init KIT`, `check`, `concepts` (six different directions → contact sheet; `--pick`, `--keep`, `--engines`), `art-briefs` (image prompts per direction), `render [--engine] [--locale]... [--slot]... [--panel N] [--install KIT] [--offline]`, `eject`, `validate OUT`, `canvas` / `canvas-link` (Claude Design), `review-page OUT` (one HTML page when the canvas isn't available), `engines`, `presets`; code in `scripts/studio/` |
 | `scripts/apple_ads.py` | `check\|status\|plan\|report\|optimize KIT [--days N]`, `apply KIT --yes`, `activate\|pause KIT --campaign ID --yes`, `apply-proposals KIT --yes`; `--dry-run` sends no writes; Apple Ads Platform API v1 |
 | `scripts/apple_ads_key.py` | `KIT [--new-key] [--key-dir]`: makes the Apple Ads key pair, takes the ids Apple shows, picks the ad account, writes `connect.yaml` |
 | `scripts/snapshot_rules.py` | `freeze KIT`, `check`: page-text hashes of the Apple sources |

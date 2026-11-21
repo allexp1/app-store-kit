@@ -110,3 +110,7 @@ A refresh that finds nothing still logs `- No changes found`.
 
 ## 2026-11-11
 - CHANGED (author edit, requested by the user): ORIGINAL.sha256 re-baselined to the edited SKILL.md, which now carries the Apple Ads journey and gates, PR-19 (WeatherKit attribution) in READINESS, one rejection message file per round, and the Attach File / Save Draft step in the rejection reply.
+
+## 2026-11-13
+- Refresh: `snapshot_rules.py check` named 6 changed pages (screenshots, previews, version-info, app-info, iap-info, review-help-screenshots). All six re-read. No rule number or limit differs from KNOWLEDGE.md: screenshot sizes and required sets, preview specs, text limits, IAP limits and the 2.3.3 "majority in use" rule are the same. The five App Store Connect Help pages share one navigation list, which is the likely cause of five hashes moving together. No changes found — https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications , https://developer.apple.com/help/app-review/guideline-reference/2-3-3-screenshots
+- Noted, no rule change: the Support URL text says a Software Bill of Materials, when one is required, can be put on the support site — https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information

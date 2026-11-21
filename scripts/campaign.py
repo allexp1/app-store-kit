@@ -5,7 +5,9 @@ Usage:
   campaign.py analyze SCREENSHOT... [--icon ICON] [--out analysis.json]
   campaign.py init KIT --app NAME --screens DIR [--icon ICON] [--panels 6] [--slot iphone-di-large]
   campaign.py check CAMPAIGN.yaml
-  campaign.py concepts CAMPAIGN.yaml [--engines a,b,...] [--scale 0.3] [--locale L] [--slot S] [--out DIR]
+  campaign.py concepts CAMPAIGN.yaml [--engines a,b,...|--pick] [--keep a,b] [--brand-only] [--scale 0.3]
+                                     [--locale L] [--slot S] [--out DIR]
+  campaign.py art-briefs CAMPAIGN.yaml [--engines a,b,...|--pick] [--out DIR]   (image prompts per direction)
   campaign.py render CAMPAIGN.yaml [--engine E] [--locale L]... [--slot S]... [--panel N] [--install KIT]
                                    [--out DIR] [--offline]
   campaign.py eject CAMPAIGN.yaml [--engine E] [--out FILE]
@@ -34,7 +36,7 @@ from PIL import Image
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from studio import analyze, engines, fonts, pipeline  # noqa: E402
+from studio import analyze, diversity, engines, fonts, pipeline  # noqa: E402
 from studio import spec as S  # noqa: E402
 
 
@@ -144,18 +146,32 @@ def out_root(a, spec):
     return pathlib.Path(a.out) if a.out else pathlib.Path(spec["_base"]) / "out"
 
 
-def concept_list(spec, wanted):
-    if spec.get("concepts") and not wanted:
-        return spec["concepts"]
-    names = wanted or engines.DEFAULT_SIX
-    return [{"engine": n} for n in names]
+def concept_list(spec, wanted, *, pick=False, keep=None, brand_only=False):
+    """The directions to show: named engines (brand palette), else the file's `concepts:` list, else the
+    diversity picker (six engines that differ on 3+ axes, each with its own palette family and type preset)."""
+    if wanted:   # named engines still wear their own palette family (brand_only keeps the brand palette)
+        base = (spec.get("design") or {}).get("palette") or {}
+        out = []
+        for n in wanted:
+            fam = "brand" if brand_only else engines.ENGINES.get(n, {}).get("axes", {}).get("color", "brand")
+            if fam not in diversity.FAMILIES:
+                fam = "brand"
+            out.append({"engine": n, "family": fam, "palette": diversity.family_palette(base, fam)})
+        return out
+    if spec.get("concepts") and not pick:
+        if not brand_only:
+            return spec["concepts"]
+        base = (spec.get("design") or {}).get("palette") or {}
+        return [{**c, "family": "brand", "palette": dict(base)} for c in spec["concepts"]]
+    return diversity.concepts(spec, brand_only=brand_only, keep=keep)
 
 
 def cmd_concepts(a):
     rules = load_rules(a.campaign)
     base, _ = load_checked(a.campaign, rules)
     wanted = [x.strip() for x in a.engines.split(",")] if a.engines else None
-    concepts = concept_list(base, wanted)
+    keep = [x.strip() for x in a.keep.split(",")] if a.keep else None
+    concepts = concept_list(base, wanted, pick=a.pick or bool(keep), keep=keep, brand_only=a.brand_only)
     locale = a.locale or base["campaign"]["primary_locale"]
     slot = S.slot_size(a.slot or base["campaign"]["slots"][0], rules)
     out = out_root(a, base) / "concepts"
@@ -170,6 +186,15 @@ def cmd_concepts(a):
         spec["design"]["type"] = {**spec["design"]["type"], "preset": c.get("type") or meta["type"]}
         if c.get("palette"):
             spec["design"]["palette"] = {**spec["design"]["palette"], **c["palette"]}
+        if c.get("artwork"):   # a direction's own generated art (see `art-briefs`), checked like the file's own
+            own_roles = {v.get("role") for v in c["artwork"].values()}
+            spec["artwork"] = {**c["artwork"], **{k: v for k, v in (spec.get("artwork") or {}).items()
+                                                  if k not in c["artwork"] and v.get("role") not in own_roles}}
+            raw = {**{key: v for key, v in base.items()}, "artwork": spec["artwork"]}
+            errs = [i for i in S.validate(raw, rules) if i[0] == "error"]
+            if errs:
+                print_issues(errs)
+                raise SystemExit(f"concept {eng}: {len(errs)} error(s) in its artwork; fix them first")
         spec["layers"] = None
         lay = pipeline.layout_for(spec, eng, blocks)
         letter = chr(ord("A") + k)
@@ -183,6 +208,7 @@ def cmd_concepts(a):
         pal = spec["design"]["palette"]
         rendered.append({"letter": letter, "engine": eng, "label": c.get("name") or meta["label"],
                          "mood": c.get("mood") or meta["mood"], "rationale": c.get("rationale", ""),
+                         "family": c.get("family", ""), "axes": meta.get("axes", {}),
                          "pattern": meta["pattern"], "type": spec["design"]["type"]["preset"], "type_mood": pv["mood"],
                          "palette": pal, "palette_swatches": [pal[t] for t in ("bg", "bg2", "ink", "accent", "accent2", "dark") if t in pal],
                          "preview": str(prev), "needs": meta["needs"],
@@ -336,7 +362,53 @@ def cmd_review_page(a):
 def cmd_engines(_a):
     for k, v in engines.ENGINES.items():
         need = f"  needs: {'; '.join(v['needs'])}" if v["needs"] else ""
-        print(f"{k:18} {v['pattern']}\n{'':18} type: {v['type']}. {v['mood']}{need}")
+        ax = " · ".join(f"{a} {v['axes'].get(a, '?')}" for a in engines.AXES)
+        art = f"  art: {v['art']['role']}" if v.get("art") else ""
+        print(f"{k:18} {v['pattern']}\n{'':18} type: {v['type']}. {v['mood']}{need}\n{'':18} {ax}{art}")
+
+
+ART_NEVER = ("text, letters, numbers or captions of any kind; app screens, buttons, charts, notifications or any "
+             "user interface; phones, tablets, watches, laptops or any Apple product; logos, brands or trademarks; "
+             "people's faces or identifiable people; other apps' characters or artwork; awards or badges; "
+             "watermarks or signatures")
+ART_SHAPE = {"scene": ("very wide 16:5 strip (render at the widest landscape size and extend the sky)",
+                       "the upper third and the centre of every fifth of the width stay calm for headlines and phones"),
+             "texture": ("portrait 3:4, tileable", "even everywhere: no focal point at all"),
+             "pattern": ("square, seamless tile", "very low contrast so real UI cards read on top of it"),
+             "photo": ("landscape 3:2", "a single clear subject; it will be shown small, beside the real screen")}
+
+
+def cmd_art_briefs(a):
+    """One image prompt per direction that can use generated art, in the direction's own palette family."""
+    rules = load_rules(a.campaign)
+    base, _ = load_checked(a.campaign, rules)
+    wanted = [x.strip() for x in a.engines.split(",")] if a.engines else None
+    out = pathlib.Path(a.out) if a.out else pathlib.Path(base["_base"]) / "art" / "briefs"
+    out.mkdir(parents=True, exist_ok=True)
+    app = (base.get("app") or {}).get("name", "the app")
+    n = 0
+    for c in concept_list(base, wanted, pick=a.pick):
+        meta = engines.ENGINES[c["engine"]]
+        art = meta.get("art")
+        if not art:
+            continue
+        pal = {**base["design"]["palette"], **(c.get("palette") or {})}
+        shape, calm = ART_SHAPE.get(art["role"], ("portrait 3:4", "leave calm areas for headlines and phones"))
+        count = base["campaign"]["panels"] * 2 if art["role"] == "photo" else 1
+        text = (f"Background art for the App Store screenshots of {app} ({c['engine']} direction, role "
+                f"{art['role']}).\n\nDepict: {art['brief']}.\nFormat: {shape}. {calm}.\n"
+                f"Palette: {', '.join(pal[k] for k in ('bg', 'bg2', 'accent', 'accent2', 'dark') if k in pal)} "
+                f"(the {c.get('family') or 'brand'} family); the real app screens will sit on top in their own colours.\n"
+                f"Make {count} image(s), each different, all in the same light and finish.\n"
+                f"Never include: {ART_NEVER}.\n")
+        f = out / f"{c['engine']}-{art['role']}.txt"
+        f.write_text(text)
+        n += 1
+        print(f"{f}")
+    print(f"{n} brief(s). Generate with any image model you are allowed to use (Codex: `codex exec --sandbox "
+          f"workspace-write -C DIR < BRIEF`), look at every image, then add each under the direction's "
+          f"`artwork:` with role, source (tool, model, date, prompt file) and licence.")
+    return 0
 
 
 def cmd_presets(_a):
@@ -355,6 +427,11 @@ def main(argv=None):
     p = sub.add_parser("concepts"); p.add_argument("campaign"); p.add_argument("--engines")
     p.add_argument("--scale", type=float, default=0.3); p.add_argument("--locale"); p.add_argument("--slot")
     p.add_argument("--out"); p.add_argument("--offline", action="store_true")
+    p.add_argument("--pick", action="store_true", help="use the diversity picker even when the file lists concepts")
+    p.add_argument("--keep", help="engines the picker must include")
+    p.add_argument("--brand-only", action="store_true", help="every direction keeps the brand palette")
+    p = sub.add_parser("art-briefs"); p.add_argument("campaign"); p.add_argument("--engines"); p.add_argument("--out")
+    p.add_argument("--pick", action="store_true")
     p = sub.add_parser("render"); p.add_argument("campaign"); p.add_argument("--engine")
     p.add_argument("--locale", action="append"); p.add_argument("--slot", action="append")
     p.add_argument("--panel", type=int); p.add_argument("--install"); p.add_argument("--out")
@@ -371,7 +448,7 @@ def main(argv=None):
     try:
         return {"analyze": cmd_analyze, "init": cmd_init, "check": cmd_check, "concepts": cmd_concepts,
                 "render": cmd_render, "eject": cmd_eject, "validate": cmd_validate, "canvas": cmd_canvas,
-                "canvas-link": cmd_canvas_link, "review-page": cmd_review_page, "engines": cmd_engines, "presets": cmd_presets}[a.cmd](a) or 0
+                "canvas-link": cmd_canvas_link, "art-briefs": cmd_art_briefs, "review-page": cmd_review_page, "engines": cmd_engines, "presets": cmd_presets}[a.cmd](a) or 0
     except S.SpecError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

@@ -101,7 +101,7 @@ extra_layers: [...]           # added on top of an engine's layers without eject
 | `card` | a real crop of a screen lifted out in 3D: `screen`, `crop: [x, y, w, h]` (fractions), `x`, `y`, `w`, `rotate`, `radius`, `shadow` |
 | `text` | `panel`, `x`, `y`, `w`, `align`, `anchor`, `color`, `accent`, `accent_style`, `shadow`, `chip_style: glass\|solid\|outline\|sticker`, `chip_fill`, `items: [{role: kicker\|headline\|sub\|chips\|stat\|label\|footnote, copy: <id>.<field>, size, color, opacity}]` |
 | `display` | giant decorative text (`text`, `x`, `y`, `size`, `outline`, `opacity`, `tracking`): never the only place a claim is made |
-| `shape` | `kind: blob\|wave\|ring\|circle\|path\|rect\|dots\|arc`, `fill`, `stroke`, `blur`, `opacity` and kind-specific keys |
+| `shape` | `kind: blob\|wave\|ring\|circle\|path\|rect\|dots\|arc\|glyph`, `fill`, `stroke`, `blur`, `opacity` and kind-specific keys. `glyph` draws a built-in pictogram (`glyph:` one of `scene.GLYPHS`: plane, capsule, blister, pill, clock, bell, moon, sun, star, suitcase, ticket, globe, passport, pin, house, heart, drop, cloud) at `x`, `y`, `size`, `rotate`, in `fill` and `fill2`, with a soft drop shadow unless `shadow: false`. Original drawings: no brand, no product, no Apple hardware |
 | `glow` | soft light: `x`, `y`, `r`, `color`, `opacity`, `blend` |
 | `image` | `art` (from `artwork:`), `x`, `y`, `w`, `h`, `fit`, `blend`, `mask: blob` (an organic rounded crop) |
 | `icon` | the app icon (`app.icon`): `x`, `y`, `w` |
@@ -129,6 +129,19 @@ spread), `image` (`art`).
 | `before-after` | a dim "before" panel meets a bright "after" across one phone; later panels pair a small phone with a sourced stat |
 | `glass` | pale gradient light, glass chips under the headline, a real UI card floating off the phone, one word in italic serif |
 | `sticker-pop` | sky gradient, the key word in a gradient pill, feature chips stuck on as tilted stickers above a big phone |
+| `interface-monument` | no phone: one real region of the screen fills most of the panel, edge to edge on odd panels |
+| `specimen-sheet` | a ruled grid of real UI exhibits with mono plate numbers |
+| `field-journal` | paper, a serif chapter headline, the sub in a ruled margin, a dashed hand line to the phone |
+| `type-weave` | duotone panels, the accent word set giant behind a large cropped phone |
+| `screen-strips` | three real bands of the screen stacked with big numbers, a vivid colour per panel |
+| `card-cascade` | the screen's own cards tumble down odd panels; even panels show the whole screen |
+| `annotated-zoom` | a phone and one magnified real detail joined by a numbered leader line, on a dark grid |
+| `contact-sheet` | two photo cells (`artwork` with `role: photo`) and one large real screen, hopping diagonally |
+| `flight-path` | a sky from dawn to night across the set, one route through every panel, a plane crossing the first seam, each panel's motifs floating beside a tilted phone |
+| `boarding-pass` | each panel a ticket with notches and a tear line: headline and pictogram on the ticket, phone rising from the stub |
+| `orbit` | dashed rings around every phone overlap the neighbours; the panel's motifs sit on them as markers |
+| `travel-stickers` | kraft-paper diary: taped phones, motif stickers, passport-stamp rings, a hand-drawn arrow |
+| `breakout` | a new saturated colour per panel, the key real card bursting past both phone edges, a mosaic closer |
 
 Every engine also places what the storyboard asks for: `chips` and a `stat` join the panel's caption block (so they
 never collide with it), and a `footnote` goes to the free edge of the panel on a quiet backing that stays readable
@@ -142,10 +155,54 @@ it looks: `color`, `italic`, `marker` (highlighter), `pill` (the word on a gradi
 ring), `underline` (a curved swash), `box` (a selection box with handles), `serif` (the word in Instrument Serif
 italic, loaded only when used), `gradient` (accent to accent2 text fill). One accent per headline reads best.
 
-The six defaults for `concepts` are the first six. Adding an engine: write a function in
-`scripts/studio/engines.py` decorated with `@engine(name, label=, pattern=, type_preset=, mood=)` that returns
+### Picking directions that really differ
+
+Six concepts from one layout family read as one idea in six colours. Every engine sits on six axes (`device`,
+`composition`, `background`, `type`, `color`, `eye`; `campaign.py engines` prints them), and `studio/diversity.py`
+searches every combination for the six whose closest pair still differs the most: any two differ on 3+ axes and on
+2+ of the structural ones (device, composition, background, eye), no two share a palette family or a type preset,
+one keeps the brand (or sky) palette, and an engine whose artwork is missing is left out. Each concept gets its
+family's palette (`brand sky dark paper mono cool duotone vivid pastel natural`, derived from the brand accent so the
+key word still wears the app's colour).
+
+- `concepts CAMPAIGN.yaml` uses the file's `concepts:` list when there is one, else the picker.
+- `--pick` forces the picker; `--keep a,b` puts engines in the set; `--brand-only` keeps the brand palette for all.
+- `--engines a,b` shows exactly those; each still wears its own palette family (or the brand with `--brand-only`).
+- The same campaign always gets the same six; a new `campaign.seed` explores another six.
+
+### Motifs: pictograms from the app's own story
+
+`studio/motifs.py` reads each panel's headline (weight 3), sub (2) and screen id (1), plus the app name and
+description, and picks glyphs that fit: a medication panel gets capsules and a blister pack, "when you get home" a
+house, jet lag the moon and sun, a landing the plane and a pin. `design.motifs: [capsule, clock, blister]` puts the
+owner's choices first in the app-wide set. Engines read them with `e.motifs(panel, n)` and draw them with the
+`glyph` shape or `e.badge(glyph, x, y, size)` (a sticker disc). Keep motifs beside the phone, never over the
+screen's content, and drop one that reads as something else (a scored round tablet read as "no entry").
+
+### Art briefs for generated art
+
+`campaign.py art-briefs CAMPAIGN.yaml [--engines ...|--pick]` writes one image prompt per direction whose engine can
+use art (`immersive` scene, `field-journal` paper texture, `card-cascade` pattern, `contact-sheet` photos), in that
+direction's palette family, with the shape and the calm areas the layout needs and a fixed list of what the art must
+never show (text, UI, devices or any Apple product, logos, faces, other apps' characters, awards). Generate with an
+allowed image model (Codex: `codex exec --sandbox workspace-write -C DIR < BRIEF`), look at every image, then add
+each under `artwork:` with role, source and licence.
+
+### What the trend study found
+
+`references/screenshot-trends.md`: only matching screenshots to search intent (custom product pages) has measured
+lifts; glass, gradients, 3D phones and panoramas are fashion. Strong sets change structure from panel to panel,
+"break the phone parade" every two or three panels, plan one cross-screen moment (not a chopped poster), and end on a
+closer (a mosaic or a feature wall).
+
+### Adding an engine
+
+Write a function in `scripts/studio/engines.py` decorated with `@engine(name, label=, pattern=, type_preset=,
+mood=, axes={device, composition, background, type, color, eye}, art={role, brief})` that returns
 `{"background": [...], "layers": [...]}`, using the helpers `e.cap(panel, ...)`, `e.dev(panel, x, y, w, rotate)`,
-`e.cards_for(panel)`; add it to the test parametrization (it runs automatically for every registered engine).
+`e.cards_for(panel)`, `e.crops(panel, n)`, `e.card(panel, crop, x, y, w)`, `e.motifs(panel, n)`, `e.badge(...)`,
+`e.accent_word(panel)`. The layout test runs it automatically for every panel count; `axes` must name all six or the
+picker test fails.
 
 ## Typography presets
 

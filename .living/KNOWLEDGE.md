@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-11-02
+last_updated: 2026-11-13
 review_interval_days: 7
 mode: advisory
 spec: living-skills/1.1

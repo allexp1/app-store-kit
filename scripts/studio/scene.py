@@ -46,6 +46,15 @@ def unit(W, H):
     return min(W, H / 2.17)
 
 
+def _card_border(ctx, border):
+    """A card's `border`: a palette token (`ink@0.25`) becomes a thin solid outline; full CSS passes through."""
+    if not border:
+        return None
+    if " " in str(border):   # already CSS, e.g. "2px solid #fff"
+        return border
+    return f"{max(1.0, ctx.U(0.004)):.1f}px solid {ctx.col(border)}"
+
+
 def color(tok, palette, default="#000000"):
     """'accent', 'accent@0.4', '#hex', '#hex@0.5', 'rgba(...)', 'transparent'."""
     if tok is None:
@@ -266,7 +275,77 @@ def _shape(ctx, S, key, defs):
         return (f'<path d="M{p0[0]:.1f},{p0[1]:.1f} A{r:.1f},{r:.1f} 0 {large} 1 {p1[0]:.1f},{p1[1]:.1f}" fill="none" '
                 f'stroke="{ctx.col(S.get("stroke", "accent"))}" stroke-width="{U(S.get("width", 0.02)):.1f}" '
                 f'stroke-linecap="round" opacity="{op}"{blur}/>')
+    if k == "glyph":
+        return _glyph(ctx, S, defs, key, op, blur)
     raise ValueError(f"shape kind {k!r}")
+
+
+# Small vector pictograms drawn in a 100-unit box around (0, 0), pointing right. Original drawings: no brand, no
+# product, no Apple hardware. `fill` is the body, `fill2` the second colour (a capsule's other half, a pack's foil).
+GLYPHS = {
+    "plane": [("fill", "M48,0 C48,-3 44,-5 38,-5 L8,-5 L-14,-44 L-23,-44 L-9,-5 L-34,-5 L-43,-18 L-49,-18 L-44,-4 "
+                       "L-47,0 L-44,4 L-49,18 L-43,18 L-34,5 L-9,5 L-23,44 L-14,44 L8,5 L38,5 C44,5 48,3 48,0 Z"),
+              ("fill2", "M30,-2.2 L41,-2.2 C43,-2.2 44,0 41,2.2 L30,2.2 Z"),
+              ("fill2", "M-4,-17 L6,-17 L6,-12 L-4,-12 Z M-4,12 L6,12 L6,17 L-4,17 Z")],
+    "capsule": [("fill", "M0,-15 L-25,-15 A15,15 0 0 0 -25,15 L0,15 Z"),
+                ("fill2", "M0,-15 L25,-15 A15,15 0 0 1 25,15 L0,15 Z"),
+                ("#FFFFFF@0.45", "M-30,-8 C-28,-11 -24,-11 -14,-11 L-14,-8 L-26,-8 C-28,-8 -29,-7 -30,-6 Z")],
+    "pill": [("fill", "M0,-22 A22,22 0 1 1 0,22 A22,22 0 1 1 0,-22 Z"),
+             ("fill2", "M-15,-1.8 L15,-1.8 L15,1.8 L-15,1.8 Z")],
+    "blister": [("fill2", "M-38,-26 L38,-26 Q44,-26 44,-20 L44,20 Q44,26 38,26 L-38,26 Q-44,26 -44,20 L-44,-20 "
+                          "Q-44,-26 -38,-26 Z"),
+                ("fill", " ".join(f"M{x - 9},{y} A9,9 0 1 1 {x + 9},{y} A9,9 0 1 1 {x - 9},{y} Z"
+                                  for x in (-27, -9, 9, 27) for y in (-11, 11)))],
+    "clock": [("fill", "M0,-30 A30,30 0 1 1 0,30 A30,30 0 1 1 0,-30 Z"),
+              ("fill2", "M-2.5,-21 L2.5,-21 L2.5,2.5 L-2.5,2.5 Z M-2.5,-2.5 L15,-2.5 L15,2.5 L-2.5,2.5 Z")],
+    "star": [("fill", "M0,-30 L7,-7 L30,0 L7,7 L0,30 L-7,7 L-30,0 L-7,-7 Z")],
+    "suitcase": [("fill", "M-12,-22 L-12,-31 Q-12,-36 -7,-36 L7,-36 Q12,-36 12,-31 L12,-22 L6,-22 L6,-30 L-6,-30 "
+                          "L-6,-22 Z M-28,-22 L28,-22 Q34,-22 34,-16 L34,22 Q34,28 28,28 L-28,28 Q-34,28 -34,22 "
+                          "L-34,-16 Q-34,-22 -28,-22 Z"),
+                 ("fill2", "M-21,-22 L-15,-22 L-15,28 L-21,28 Z M15,-22 L21,-22 L21,28 L15,28 Z")],
+    "ticket": [("fill", "M-44,-22 L44,-22 L44,-6 A6,6 0 0 0 44,6 L44,22 L-44,22 L-44,6 A6,6 0 0 0 -44,-6 Z"),
+               ("fill2", "M20,-16.8 A1.8,1.8 0 1 1 20,-13.2 A1.8,1.8 0 1 1 20,-16.8 Z M20,-10.8 A1.8,1.8 0 1 1 20,-7.2 A1.8,1.8 0 1 1 20,-10.8 Z M20,-4.8 A1.8,1.8 0 1 1 20,-1.2 A1.8,1.8 0 1 1 20,-4.8 Z M20,1.2 A1.8,1.8 0 1 1 20,4.8 A1.8,1.8 0 1 1 20,1.2 Z M20,7.2 A1.8,1.8 0 1 1 20,10.8 A1.8,1.8 0 1 1 20,7.2 Z M20,13.2 A1.8,1.8 0 1 1 20,16.8 A1.8,1.8 0 1 1 20,13.2 Z M-34,-11 L8,-11 L8,-6 L-34,-6 Z M-34,1 L-4,1 L-4,5 L-34,5 Z "
+                         "M-34,11 L-14,11 L-14,14 L-34,14 Z M28,-6 L36,0 L28,6 Z")],
+    "globe": [("fill", "M0,-30 A30,30 0 1 1 0,30 A30,30 0 1 1 0,-30 Z"),
+              ("fill2", "M0,-30 A12,30 0 1 1 0,30 A12,30 0 1 1 0,-30 Z M0,-27 A9,27 0 1 0 0,27 A9,27 0 1 0 0,-27 Z "
+                        "M-30,-1.6 L30,-1.6 L30,1.6 L-30,1.6 Z M-25,-15 L25,-15 L25,-12 L-25,-12 Z "
+                        "M-25,12 L25,12 L25,15 L-25,15 Z", "evenodd")],
+    "passport": [("fill", "M-22,-32 L22,-32 Q26,-32 26,-28 L26,28 Q26,32 22,32 L-22,32 Q-26,32 -26,28 L-26,-28 "
+                          "Q-26,-32 -22,-32 Z"),
+                 ("fill2", "M0,-16 A12,12 0 1 1 0,8 A12,12 0 1 1 0,-16 Z M0,-13 A9,9 0 1 0 0,5 A9,9 0 1 0 0,-13 Z "
+                           "M-12,-5.5 L12,-5.5 L12,-2.5 L-12,-2.5 Z M-14,18 L14,18 L14,22 L-14,22 Z", "evenodd")],
+    "moon": [("fill", "M6,-29 A30,30 0 1 0 6,29 A24,24 0 1 1 6,-29 Z")],
+    "sun": [("fill", "M0,-16 A16,16 0 1 1 0,16 A16,16 0 1 1 0,-16 Z M20.0,3.0 L31.0,3.0 L31.0,-3.0 L20.0,-3.0 Z M12.0,16.3 L19.8,24.0 L24.0,19.8 L16.3,12.0 Z M-3.0,20.0 L-3.0,31.0 L3.0,31.0 L3.0,20.0 Z M-16.3,12.0 L-24.0,19.8 L-19.8,24.0 L-12.0,16.3 Z M-20.0,-3.0 L-31.0,-3.0 L-31.0,3.0 L-20.0,3.0 Z M-12.0,-16.3 L-19.8,-24.0 L-24.0,-19.8 L-16.3,-12.0 Z M3.0,-20.0 L3.0,-31.0 L-3.0,-31.0 L-3.0,-20.0 Z M16.3,-12.0 L24.0,-19.8 L19.8,-24.0 L12.0,-16.3 Z")],
+    "bell": [("fill", "M0,-30 C-14,-30 -20,-18 -20,-6 L-20,8 L-28,18 L28,18 L20,8 L20,-6 C20,-18 14,-30 0,-30 Z"),
+             ("fill", "M-8,22 A8,8 0 0 0 8,22 Z")],
+    "pin": [("fill", "M0,32 C-6,20 -22,6 -22,-8 A22,22 0 1 1 22,-8 C22,6 6,20 0,32 Z"),
+            ("fill2", "M0,-16 A8,8 0 1 1 0,0 A8,8 0 1 1 0,-16 Z")],
+    "house": [("fill", "M0,-30 L32,-4 L24,-4 L24,28 L-24,28 L-24,-4 L-32,-4 Z"),
+              ("fill2", "M-7,8 L7,8 L7,28 L-7,28 Z")],
+    "heart": [("fill", "M0,26 C-30,6 -34,-10 -24,-22 C-14,-32 -2,-26 0,-16 C2,-26 14,-32 24,-22 C34,-10 30,6 0,26 Z")],
+    "drop": [("fill", "M0,-30 C10,-14 22,-2 22,10 A22,22 0 1 1 -22,10 C-22,-2 -10,-14 0,-30 Z")],
+    "cloud": [("fill", "M-30,14 A12,12 0 0 1 -26,-8 A16,16 0 0 1 2,-18 A14,14 0 0 1 28,-4 A12,12 0 0 1 30,14 Z")],
+}
+
+
+def _glyph(ctx, S, defs, key, op, blur):
+    name = S.get("glyph", "plane")
+    if name not in GLYPHS:
+        raise ValueError(f"glyph {name!r}; one of {', '.join(GLYPHS)}")
+    cx, cy = ctx.W * S["x"], ctx.Y(S["y"])
+    s = ctx.U(S.get("size", 0.12)) / 100
+    rot = S.get("rotate", 0)
+    cols = {"fill": ctx.col(S.get("fill", "accent")), "fill2": ctx.col(S.get("fill2", "light"))}
+    body = "".join(f'<path d="{g[1]}" fill="{cols.get(g[0]) or ctx.col(g[0])}"'
+                   + (' fill-rule="evenodd"' if len(g) > 2 else "") + "/>" for g in GLYPHS[name])
+    shadow = ""
+    if S.get("shadow", True):
+        sd = ctx.U(S.get("size", 0.12)) * 0.06
+        shadow = (f'<g transform="translate({cx + sd:.1f} {cy + sd * 1.6:.1f}) rotate({rot}) scale({s:.4f})" '
+                  f'opacity="0.18">' + "".join(f'<path d="{g[1]}" fill="#000"' + (' fill-rule="evenodd"' if len(g) > 2 else "") + "/>"
+                          for g in GLYPHS[name]) + "</g>")
+    return (shadow + f'<g transform="translate({cx:.1f} {cy:.1f}) rotate({rot}) scale({s:.4f})" opacity="{op}"{blur}>'
+            + body + "</g>")
 
 
 def _on(ctx, tok):
@@ -429,7 +508,7 @@ def build(spec, locale, slot_id, W, H, layout, finfo, font_css, fit=None, mirror
                 cid=f"card{i}", screen_uri=uri, shot_w=sw, shot_h=sh, crop=crop, cx=ctx.X(L["x"]),
                 cy=ctx.Y(L["y"]), width=ctx.U(L.get("w", 0.6)), radius=L.get("radius", 0.06),
                 rotate=ctx.rot(L.get("rotate")), shadow=L.get("shadow", "float"), z=z,
-                light=(360 - dev["light"]) % 360 if mirror else dev["light"], border=L.get("border"),
+                light=(360 - dev["light"]) % 360 if mirror else dev["light"], border=_card_border(ctx, L.get("border")),
                 lift=L.get("lift", 0)))
             elements.append({"id": f"card{i}", "kind": "card", "screen": L["screen"]})
         elif t == "image":

@@ -792,3 +792,97 @@ def test_folder_names_do_not_decide_in_use(tmp_path):
     sp = S.load(make_campaign(tmp_path, panels=3))
     sp["screens"]["s1"] = "screens/launch/home.png"
     assert 1 in S.in_use_panels(sp)
+
+
+# ---------------------------------------------------------------- diversity picker
+def test_every_engine_sits_on_all_six_axes():
+    from studio import engines as EN
+    for name, meta in EN.ENGINES.items():
+        assert set(meta["axes"]) == set(EN.AXES), name
+
+
+def test_picker_returns_six_that_really_differ():
+    from studio import diversity as D
+    spec = {"campaign": {"seed": 7}, "design": {"palette": {"accent": "#5856D6"}}, "artwork": {}}
+    names = D.pick(spec, 6)
+    assert len(names) == len(set(names)) == 6
+    for a, b in __import__("itertools").combinations(names, 2):
+        d, ds = D.distance(a, b)
+        assert d >= 3 and ds >= 2, (a, b)
+    fams = [D.ENGINES[n]["axes"]["color"] for n in names]
+    assert len(set(fams)) == 6 and "brand" in fams
+
+
+def test_picker_is_stable_and_respects_keep():
+    from studio import diversity as D
+    spec = {"campaign": {"seed": 7}, "design": {"palette": {"accent": "#5856D6"}}, "artwork": {}}
+    assert D.pick(spec) == D.pick(spec)
+    assert "interface-monument" in D.pick(spec, keep=["interface-monument"])
+
+
+def test_picker_leaves_out_engines_without_their_art():
+    from studio import diversity as D
+    spec = {"campaign": {}, "design": {"palette": {}}, "artwork": {}}
+    pool = D.available(spec)
+    assert "immersive" not in pool and "contact-sheet" not in pool
+
+
+def test_concepts_get_distinct_type_presets_and_full_palettes():
+    from studio import diversity as D
+    full = {"bg": "#211C50", "bg2": "#343078", "ink": "#FFFFFF", "muted": "#AAAAAA", "accent": "#5856D6",
+            "accent2": "#FF9500", "dark": "#000000", "light": "#FFFFFF"}
+    spec = {"campaign": {"seed": 7}, "design": {"palette": full}, "artwork": {}}
+    cs = D.concepts(spec)
+    assert len({c["type"] for c in cs}) == len(cs)
+    for c in cs:
+        assert {"bg", "bg2", "ink", "accent", "dark", "light"} <= set(c["palette"]), c["engine"]
+
+
+@pytest.mark.parametrize("fam", ["brand", "dark", "paper", "mono", "cool", "duotone", "vivid", "pastel", "natural"])
+def test_family_palettes_are_valid_hex(fam):
+    import re
+    from studio import diversity as D
+    pal = D.family_palette({"accent": "#5856D6", "bg": "#211C50", "bg2": "#343078", "ink": "#FFFFFF",
+                            "muted": "#AAAAAA", "accent2": "#FF9500", "dark": "#000000", "light": "#FFFFFF"}, fam)
+    assert all(re.fullmatch(r"#[0-9A-F]{6}", v, re.I) for v in pal.values())
+
+
+def test_motifs_follow_each_panels_story():
+    from studio import motifs as M
+    spec = {"campaign": {"primary_locale": "en-US"}, "app": {"name": "Trip pills"}, "design": {},
+            "storyboard": [{"id": "dose", "headline": {"en-US": "Never miss a **dose**"}, "screen": "health"},
+                           {"id": "home", "headline": {"en-US": "Back **home**"}, "screen": "x"},
+                           {"id": "sleep", "headline": {"en-US": "Beat jet lag tonight"}, "screen": "x"}]}
+    assert M.panel_motifs(spec, 1)[0] in ("capsule", "blister")
+    assert M.panel_motifs(spec, 2)[0] == "house"
+    assert M.panel_motifs(spec, 3)[0] == "moon"
+    assert len(M.panel_motifs(spec, 3, 3)) == 3
+
+
+def test_every_lexicon_glyph_is_drawable():
+    from studio import motifs as M
+    for g in list(M.LEXICON) + M.FALLBACK:
+        assert g in scene.GLYPHS, g
+
+
+def test_shorthand_accent_builds_every_family():
+    from studio import diversity
+    for fam in diversity.FAMILIES:
+        assert diversity.family_palette({"accent": "#f50"}, fam)
+
+
+def test_brand_only_overrides_a_files_concepts_list():
+    import campaign
+    spec = {"design": {"palette": {"accent": "#5856D6"}},
+            "concepts": [{"engine": "editorial", "palette": {"accent": "#FF0000"}}]}
+    out = campaign.concept_list(spec, None, brand_only=True)
+    assert out[0]["palette"]["accent"] == "#5856D6" and out[0]["engine"] == "editorial"
+
+
+def test_card_border_token_becomes_a_css_outline():
+    class Ctx:
+        U = staticmethod(lambda u: u * 1000)
+        col = staticmethod(lambda t: "rgba(1,2,3,0.25)" if t == "ink@0.25" else t)
+    assert scene._card_border(Ctx, "ink@0.25") == "4.0px solid rgba(1,2,3,0.25)"
+    assert scene._card_border(Ctx, "2px solid #fff") == "2px solid #fff"
+    assert scene._card_border(Ctx, None) is None
